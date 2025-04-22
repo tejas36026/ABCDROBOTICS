@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bus Wireframe - Detailed Geometry with Static Robots</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #483d8b;
+            color: #eee;
+            font-family: sans-serif;
+        }
+        #busCanvas { display: block; width: 100vw; height: 100vh; }
+        #info {
+            position: absolute; top: 10px; left: 10px; padding: 5px 10px;
+            background-color: rgba(0,0,0,0.5); border-radius: 3px; font-size: 12px;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="info">Generating detailed bus wireframe with static robots and animated food... Hold tight!</div>
+    <canvas id="busCanvas"></canvas>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- Setup ---
+        const canvas = document.getElementById('busCanvas');
+        const scene = new THREE.Scene();
+        const infoElement = document.getElementById('info');
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(12, 6, 15);
+        camera.lookAt(0, 1.5, 0);
+
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x483d8b);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.target.set(0, 1.5, 0);
+
+        // --- Materials ---
+        const lineMaterial = new THREE.LineBasicMaterial({
+            color: 0xADD8E6,
+            linewidth: 1.5
+        });
+        const detailLineMaterial = new THREE.LineBasicMaterial({
+            color: 0x87CEEB,
+            linewidth: 1.0
+        });
+        const headlightMaterial = new THREE.MeshBasicMaterial({
+            color: 0xFFFFFF,
+            wireframe: true
+        });
+        const wheelMaterial = new THREE.MeshBasicMaterial({
+            color: 0xADD8E6,
+            wireframe: true
+        });
+        const robotMaterial = new THREE.LineBasicMaterial({
+            color: 0xFF4500,
+            linewidth: 1.5
+        });
+        const jointMaterial = new THREE.LineBasicMaterial({
+            color: 0xFFD700,
+            linewidth: 1.8
+        });
+        const foodMaterial = new THREE.LineBasicMaterial({
+            color: 0xFFFF00,
+            linewidth: 1.0
+        });
+        const cookingSurfaceMaterial = new THREE.LineBasicMaterial({
+            color: 0xFF4500,
+            linewidth: 1.2
+        });
+
+        // --- Bus Group ---
+        const busGroup = new THREE.Group();
+        scene.add(busGroup);
+
+        // --- Bus Dimensions ---
+        const busLength = 8;
+        const busWidth = 2.5;
+        const busHeight = 3.5;
+        const floorY = 0.4;
+        const roofY = busHeight;
+        const wheelRadius = 0.5;
+        const wheelWidth = 0.3;
+        const halfL = busLength / 2;
+        const halfW = busWidth / 2;
+
+        console.log("--- DEBUG: Bus Dimensions ---");
+        console.log(`Bus Length: ${busLength}, Width: ${busWidth}, Height: ${busHeight}`);
+        console.log(`Floor Y: ${floorY}, Roof Y: ${roofY}`);
+        console.log("-----------------------------");
+
+        const frontAxleX = -halfL * 0.7;
+        const rearAxle1X = halfL * 0.35;
+        const rearAxle2X = halfL * 0.7;
+
+        // --- Point Arrays ---
+        const allLinePoints = [];
+        const detailLinePoints = [];
+
+        // --- Helper Functions ---
+        function addCurvePoints(curve, segments, pointArray) {
+            const points = curve.getPoints(segments);
+            for (let i = 0; i < points.length - 1; i++) {
+                pointArray.push(points[i], points[i + 1]);
+            }
+        }
+
+        function addRectangle(x1, y1, x2, y2, z, pointArray) {
+            pointArray.push(new THREE.Vector3(x1, y1, z)); pointArray.push(new THREE.Vector3(x2, y1, z));
+            pointArray.push(new THREE.Vector3(x2, y1, z)); pointArray.push(new THREE.Vector3(x2, y2, z));
+            pointArray.push(new THREE.Vector3(x2, y2, z)); pointArray.push(new THREE.Vector3(x1, y2, z));
+            pointArray.push(new THREE.Vector3(x1, y2, z)); pointArray.push(new THREE.Vector3(x1, y1, z));
+        }
+
+        function addRectangleYZ(x, y1, z1, y2, z2, pointArray) {
+            pointArray.push(new THREE.Vector3(x, y1, z1)); pointArray.push(new THREE.Vector3(x, y1, z2));
+            pointArray.push(new THREE.Vector3(x, y1, z2)); pointArray.push(new THREE.Vector3(x, y2, z2));
+            pointArray.push(new THREE.Vector3(x, y2, z2)); pointArray.push(new THREE.Vector3(x, y2, z1));
+            pointArray.push(new THREE.Vector3(x, y2, z1)); pointArray.push(new THREE.Vector3(x, y1, z1));
+        }
+
+        function addCircleOutline(centerX, centerY, centerZ, radiusX, radiusY, segments, rotation, pointArray) {
+            const points = [];
+            for (let i = 0; i <= segments; i++) {
+                const angle = (i / segments) * Math.PI * 2 + rotation;
+                points.push(new THREE.Vector3(
+                    centerX + radiusX * Math.cos(angle),
+                    centerY + radiusY * Math.sin(angle),
+                    centerZ
+                ));
+            }
+            for (let i = 0; i < points.length - 1; i++) { pointArray.push(points[i], points[i+1]); }
+            pointArray.push(points[points.length-1], points[0]);
+        }
+
+        function addCircleOutlineYZ(centerX, centerY, centerZ, radiusY, radiusZ, segments, pointArray) {
+            const points = [];
+            for (let i = 0; i <= segments; i++) {
+                const angle = (i / segments) * Math.PI * 2;
+                points.push(new THREE.Vector3(
+                    centerX,
+                    centerY + radiusY * Math.sin(angle),
+                    centerZ + radiusZ * Math.cos(angle)
+                ));
+            }
+            for (let i = 0; i < points.length - 1; i++) { pointArray.push(points[i], points[i+1]); }
+            pointArray.push(points[points.length-1], points[0]);
+        }
+
+        function addGridYZ(x, y1, z1, y2, z2, rowsCount, colsCount, pointArray) {
+            const width = z2 - z1;
+            const height = y2 - y1;
+            for (let i = 0; i <= rowsCount; i++) {
+                const y = y1 + (height * i / rowsCount);
+                pointArray.push(new THREE.Vector3(x, y, z1));
+                pointArray.push(new THREE.Vector3(x, y, z2));
+            }
+            for (let i = 0; i <= colsCount; i++) {
+                const z = z1 + (width * i / colsCount);
+                pointArray.push(new THREE.Vector3(x, y1, z));
+                pointArray.push(new THREE.Vector3(x, y2, z));
+            }
+        }
+
+        // --- Generate Geometry ---
+        const bottomFrontCornerX = -halfL;
+        const bottomFrontCornerY = floorY + 0.1;
+        const topFrontCornerX = -halfL;
+        const topFrontCornerY = roofY * 0.75;
+        const topFrontPeakX = -halfL * 0.15;
+        const topFrontPeakY = roofY;
+        const topRearCornerX = halfL * 0.98;
+        const topRearCornerY = roofY * 0.90;
+        const bottomRearCornerX = halfL;
+        const bottomRearCornerY = floorY;
+
+        // 1. Side Profiles (Left and Right) using Curves
+        for (let side = 0; side < 2; side++) {
+            const z = (side === 0) ? halfW : -halfW;
+            const zSign = (side === 0) ? 1 : -1;
+
+            const bottomFront = new THREE.Vector3(bottomFrontCornerX * 0.95, bottomFrontCornerY, z);
+            const bottomRear = new THREE.Vector3(bottomRearCornerX, bottomRearCornerY, z);
+            const topRear = new THREE.Vector3(topRearCornerX, topRearCornerY, z);
+            const topFrontUpper = new THREE.Vector3(topFrontPeakX, topFrontPeakY, z);
+            const topFrontLower = new THREE.Vector3(topFrontCornerX, topFrontCornerY, z);
+
+            const roofCurve = new THREE.CatmullRomCurve3([ topRear, topFrontUpper ]);
+            addCurvePoints(roofCurve, 30, allLinePoints);
+
+            const frontTopCurve = new THREE.CatmullRomCurve3([ topFrontUpper, new THREE.Vector3(-halfL * 0.93, roofY * 0.9, z), topFrontLower ]);
+            addCurvePoints(frontTopCurve, 10, allLinePoints);
+
+            const frontPillarCurve = new THREE.CatmullRomCurve3([ topFrontLower, new THREE.Vector3(-halfL * 1.02, floorY + 0.5, z), bottomFront ]);
+            addCurvePoints(frontPillarCurve, 8, allLinePoints);
+
+            const wheelArchRadius = wheelRadius + 0.1;
+            const frontArchStartX = frontAxleX - wheelArchRadius;
+            const frontArchEndX = frontAxleX + wheelArchRadius;
+            const rearArch1StartX = rearAxle1X - wheelArchRadius;
+            const rearArch1EndX = rearAxle1X + wheelArchRadius;
+            const rearArch2StartX = rearAxle2X - wheelArchRadius;
+            const rearArch2EndX = rearAxle2X + wheelArchRadius;
+
+            allLinePoints.push(bottomFront, new THREE.Vector3(frontArchStartX, floorY, z));
+            allLinePoints.push(new THREE.Vector3(frontArchEndX, floorY, z), new THREE.Vector3(rearArch1StartX, floorY, z));
+            if (rearArch1EndX < rearArch2StartX) {
+                allLinePoints.push(new THREE.Vector3(rearArch1EndX, floorY, z), new THREE.Vector3(rearArch2StartX, floorY, z));
+            }
+            allLinePoints.push(new THREE.Vector3(rearArch2EndX, floorY, z), bottomRear);
+            allLinePoints.push(bottomRear, topRear);
+
+            const windowTopY = roofY * 0.88;
+            const windowBottomY = floorY + 1.3;
+            const windowRearX = halfL * 0.9;
+            const windowFrontX = topFrontCornerX + 0.2;
+            addRectangle(windowFrontX, windowBottomY, windowRearX, windowTopY, z, allLinePoints);
+
+            const compartmentBottomY = floorY - 0.05;
+            const compartmentTopY = floorY + 0.6;
+            addRectangle(frontArchEndX + 0.1, compartmentBottomY, rearArch1StartX - 0.1, compartmentTopY, z, allLinePoints);
+            if (rearArch1EndX < rearArch2StartX) {
+                addRectangle(rearArch1EndX + 0.1, compartmentBottomY, rearArch2StartX - 0.1, compartmentTopY, z, allLinePoints);
+            }
+            addRectangle(rearArch2EndX + 0.1, compartmentBottomY, halfL * 0.95, compartmentTopY, z, allLinePoints);
+
+            if (side === 1) {
+                const doorWidth = 0.9;
+                const doorFrontX = frontArchEndX + 0.1;
+                const doorRearX = doorFrontX + doorWidth;
+                const doorTopY = windowBottomY - 0.05;
+                const doorBottomY = floorY;
+                addRectangle(doorFrontX, doorBottomY, doorRearX, doorTopY, z, allLinePoints);
+                detailLinePoints.push(new THREE.Vector3(doorRearX - 0.15, (doorTopY+doorBottomY)/2, z));
+                detailLinePoints.push(new THREE.Vector3(doorRearX - 0.05, (doorTopY+doorBottomY)/2, z));
+            }
+
+            const headlightSideY = floorY + 0.4;
+            const taillightSideY = floorY + 0.6;
+            allLinePoints.push(new THREE.Vector3(bottomFrontCornerX * 0.98, headlightSideY - 0.1, z));
+            allLinePoints.push(new THREE.Vector3(bottomFrontCornerX * 0.98, headlightSideY + 0.1, z));
+            allLinePoints.push(new THREE.Vector3(bottomRearCornerX * 0.98, taillightSideY - 0.1, z));
+            allLinePoints.push(new THREE.Vector3(bottomRearCornerX * 0.98, taillightSideY + 0.1, z));
+
+            const mirrorY = floorY + 1.7;
+            const mirrorBaseX = topFrontCornerX + 0.1;
+            const mirrorBaseZ = zSign * (halfW + 0.05);
+            const mirrorOuterX = mirrorBaseX - 0.15;
+            const mirrorOuterZ = zSign * (halfW + 0.35);
+            const mirrorTopY = mirrorY + 0.25;
+            const mirrorBottomY = mirrorY - 0.25;
+            const mirrorThickness = 0.05;
+
+            allLinePoints.push(new THREE.Vector3(mirrorBaseX, mirrorY, mirrorBaseZ));
+            allLinePoints.push(new THREE.Vector3(mirrorBaseX, mirrorTopY + 0.1, mirrorBaseZ));
+            allLinePoints.push(new THREE.Vector3(mirrorBaseX, mirrorTopY + 0.1, mirrorBaseZ));
+            allLinePoints.push(new THREE.Vector3(mirrorOuterX, mirrorTopY, mirrorOuterZ));
+            allLinePoints.push(new THREE.Vector3(mirrorOuterX, mirrorTopY, mirrorOuterZ));
+            allLinePoints.push(new THREE.Vector3(mirrorOuterX, mirrorBottomY, mirrorOuterZ));
+            allLinePoints.push(new THREE.Vector3(mirrorOuterX, mirrorBottomY, mirrorOuterZ));
+            allLinePoints.push(new THREE.Vector3(mirrorBaseX, mirrorBottomY - 0.1, mirrorBaseZ));
+            allLinePoints.push(new THREE.Vector3(mirrorBaseX, mirrorBottomY - 0.1, mirrorBaseZ));
+            allLinePoints.push(new THREE.Vector3(mirrorBaseX, mirrorY, mirrorBaseZ));
+
+            addRectangleYZ(mirrorOuterX - mirrorThickness/2, mirrorBottomY, mirrorOuterZ, mirrorTopY, mirrorOuterZ, allLinePoints);
+            addRectangleYZ(mirrorOuterX + mirrorThickness/2, mirrorBottomY, mirrorOuterZ, mirrorTopY, mirrorOuterZ, allLinePoints);
+            allLinePoints.push(new THREE.Vector3(mirrorOuterX - mirrorThickness/2, mirrorTopY, mirrorOuterZ));
+            allLinePoints.push(new THREE.Vector3(mirrorOuterX + mirrorThickness/2, mirrorTopY, mirrorOuterZ));
+            allLinePoints.push(new THREE.Vector3(mirrorOuterX - mirrorThickness/2, mirrorBottomY, mirrorOuterZ));
+            allLinePoints.push(new THREE.Vector3(mirrorOuterX + mirrorThickness/2, mirrorBottomY, mirrorOuterZ));
+
+            const glassX = mirrorOuterX - mirrorThickness / 2 - 0.01;
+            addRectangleYZ(glassX, mirrorBottomY + 0.02, mirrorOuterZ, mirrorTopY - 0.02, mirrorOuterZ, detailLinePoints);
+        }
+
+        // 2. Connect Front and Rear Profiles
+        allLinePoints.push(new THREE.Vector3(topFrontCornerX, topFrontCornerY, halfW));
+        allLinePoints.push(new THREE.Vector3(topFrontCornerX, topFrontCornerY, -halfW));
+        allLinePoints.push(new THREE.Vector3(bottomFrontCornerX*0.95, bottomFrontCornerY, halfW));
+        allLinePoints.push(new THREE.Vector3(bottomFrontCornerX*0.95, bottomFrontCornerY, -halfW));
+        allLinePoints.push(new THREE.Vector3(topRearCornerX, topRearCornerY, halfW));
+        allLinePoints.push(new THREE.Vector3(topRearCornerX, topRearCornerY, -halfW));
+        allLinePoints.push(new THREE.Vector3(bottomRearCornerX, bottomRearCornerY, halfW));
+        allLinePoints.push(new THREE.Vector3(bottomRearCornerX, bottomRearCornerY, -halfW));
+        allLinePoints.push(new THREE.Vector3(topFrontPeakX, topFrontPeakY, halfW));
+        allLinePoints.push(new THREE.Vector3(topFrontPeakX, topFrontPeakY, -halfW));
+
+        // --- START: Front Detailing ---
+        const frontFaceX = bottomFrontCornerX;
+        const frontBumperBottomY = floorY - 0.15;
+        const frontBumperTopY = floorY + 0.15;
+        const frontBumperWidth = halfW * 1.05;
+
+        addRectangleYZ(frontFaceX, frontBumperBottomY, -frontBumperWidth, frontBumperTopY, frontBumperWidth, allLinePoints);
+        allLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperTopY, frontBumperWidth));
+        allLinePoints.push(new THREE.Vector3(bottomFrontCornerX*0.95, bottomFrontCornerY, halfW));
+        allLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperTopY, -frontBumperWidth));
+        allLinePoints.push(new THREE.Vector3(bottomFrontCornerX*0.95, bottomFrontCornerY, -halfW));
+        allLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperBottomY, frontBumperWidth));
+        allLinePoints.push(new THREE.Vector3(bottomFrontCornerX*0.95, floorY, halfW));
+        allLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperBottomY, -frontBumperWidth));
+        allLinePoints.push(new THREE.Vector3(bottomFrontCornerX*0.95, floorY, -halfW));
+
+        const lipY = frontBumperBottomY - 0.05;
+        const lipX = frontFaceX + 0.05;
+        const lipWidth = frontBumperWidth * 0.9;
+        addRectangleYZ(lipX, lipY, -lipWidth, frontBumperBottomY, lipWidth, detailLinePoints);
+        detailLinePoints.push(new THREE.Vector3(lipX, frontBumperBottomY, lipWidth));
+        detailLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperBottomY, frontBumperWidth));
+        detailLinePoints.push(new THREE.Vector3(lipX, frontBumperBottomY, -lipWidth));
+        detailLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperBottomY, -frontBumperWidth));
+        detailLinePoints.push(new THREE.Vector3(lipX, lipY, lipWidth));
+        detailLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperBottomY, frontBumperWidth));
+        detailLinePoints.push(new THREE.Vector3(lipX, lipY, -lipWidth));
+        detailLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperBottomY, -frontBumperWidth));
+
+        const fogLightY = frontBumperBottomY + 0.1;
+        const fogLightZ = halfW * 0.6;
+        addCircleOutlineYZ(frontFaceX - 0.01, fogLightY, fogLightZ, 0.08, 0.08, 12, detailLinePoints);
+        addCircleOutlineYZ(frontFaceX - 0.01, fogLightY, -fogLightZ, 0.08, 0.08, 12, detailLinePoints);
+
+        const towHookY = frontBumperBottomY + 0.05;
+        const towHookZ = halfW * 0.3;
+        addRectangleYZ(frontFaceX - 0.01, towHookY, towHookZ - 0.05, towHookY + 0.05, towHookZ + 0.05, detailLinePoints);
+        addRectangleYZ(frontFaceX - 0.01, towHookY, -towHookZ - 0.05, towHookY + 0.05, -towHookZ + 0.05, detailLinePoints);
+
+        const grilleBottomY = frontBumperTopY + 0.05;
+        const grilleTopY = floorY + 0.8;
+        const grilleWidth = halfW * 0.8;
+        const grilleX = frontFaceX - 0.02;
+
+        addRectangleYZ(grilleX, grilleBottomY, -grilleWidth, grilleTopY, grilleWidth, allLinePoints);
+        addGridYZ(grilleX - 0.01, grilleBottomY, -grilleWidth, grilleTopY, grilleWidth, 5, 10, detailLinePoints);
+
+        const emblemY = (grilleBottomY + grilleTopY) / 2;
+        addCircleOutlineYZ(grilleX - 0.02, emblemY, 0, 0.15, 0.15, 16, allLinePoints);
+        addCircleOutlineYZ(grilleX - 0.03, emblemY, 0, 0.10, 0.10, 12, detailLinePoints);
+
+        const headlightY = floorY + 0.5;
+        const headlightZ = halfW * 0.7;
+        const headlightOuterRadius = 0.25;
+        const headlightInnerRadius = 0.18;
+        const indicatorWidth = 0.15;
+        const indicatorHeight = 0.1;
+        const indicatorY = headlightY;
+        const indicatorZ = headlightZ + headlightOuterRadius + 0.05;
+
+        addCircleOutlineYZ(frontFaceX - 0.01, headlightY, headlightZ, headlightOuterRadius, headlightOuterRadius * 0.8, 16, allLinePoints);
+        addCircleOutlineYZ(frontFaceX - 0.01, headlightY, -headlightZ, headlightOuterRadius, headlightOuterRadius * 0.8, 16, allLinePoints);
+        addCircleOutlineYZ(frontFaceX - 0.02, headlightY, headlightZ, headlightInnerRadius, headlightInnerRadius * 0.8, 12, detailLinePoints);
+        addCircleOutlineYZ(frontFaceX - 0.02, headlightY, -headlightZ, headlightInnerRadius, headlightInnerRadius * 0.8, 12, detailLinePoints);
+
+        addRectangleYZ(frontFaceX - 0.01, indicatorY - indicatorHeight/2, indicatorZ, indicatorY + indicatorHeight/2, indicatorZ + indicatorWidth, allLinePoints);
+        addRectangleYZ(frontFaceX - 0.01, indicatorY - indicatorHeight/2, -indicatorZ, indicatorY + indicatorHeight/2, -indicatorZ - indicatorWidth, allLinePoints);
+        addRectangleYZ(frontFaceX - 0.02, indicatorY - indicatorHeight/2 + 0.01, indicatorZ + 0.01, indicatorY + indicatorHeight/2 - 0.01, indicatorZ + indicatorWidth - 0.01, detailLinePoints);
+        addRectangleYZ(frontFaceX - 0.02, indicatorY - indicatorHeight/2 + 0.01, -indicatorZ - 0.01, indicatorY + indicatorHeight/2 - 0.01, -indicatorZ - indicatorWidth + 0.01, detailLinePoints);
+
+        const windshieldBottomY = grilleTopY + 0.1;
+        const windshieldTopY = topFrontCornerY;
+        const windshieldBottomWidth = halfW * 0.95;
+        const windshieldTopWidth = halfW * 0.85;
+        const windshieldX = topFrontCornerX;
+
+        allLinePoints.push(new THREE.Vector3(windshieldX, windshieldBottomY, windshieldBottomWidth));
+        allLinePoints.push(new THREE.Vector3(windshieldX, windshieldTopY, windshieldTopWidth));
+        allLinePoints.push(new THREE.Vector3(windshieldX, windshieldTopY, -windshieldTopWidth));
+        allLinePoints.push(new THREE.Vector3(windshieldX, windshieldBottomY, -windshieldBottomWidth));
+        allLinePoints.push(new THREE.Vector3(windshieldX, windshieldBottomY, -windshieldBottomWidth));
+        allLinePoints.push(new THREE.Vector3(windshieldX, windshieldBottomY, windshieldBottomWidth));
+
+        const inset = 0.04;
+        detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldBottomY + inset, windshieldBottomWidth - inset));
+        detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldTopY - inset, windshieldTopWidth - inset));
+        detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldTopY - inset, -windshieldTopWidth + inset));
+        detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldBottomY + inset, -windshieldBottomWidth + inset));
+        detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldBottomY + inset, -windshieldBottomWidth + inset));
+        detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldBottomY + inset, windshieldBottomWidth - inset));
+
+        detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldBottomY + inset, 0));
+        detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldTopY - inset, 0));
+
+        const wiperBaseY = windshieldBottomY + 0.05;
+        const wiperPivotZ = halfW * 0.4;
+        const wiperLength = 0.8;
+        const wiperAngle = Math.PI * 0.8;
+        const wiperThickness = 0.03;
+
+        const wiperRXEnd = windshieldX - 0.02;
+        const wiperRYEnd = wiperBaseY + wiperLength * Math.sin(wiperAngle);
+        const wiperRZEnd = -wiperPivotZ + wiperLength * Math.cos(wiperAngle);
+        allLinePoints.push(new THREE.Vector3(windshieldX - 0.02, wiperBaseY, -wiperPivotZ));
+        allLinePoints.push(new THREE.Vector3(wiperRXEnd, wiperRYEnd, wiperRZEnd));
+        detailLinePoints.push(new THREE.Vector3(wiperRXEnd, wiperRYEnd - wiperThickness/2, wiperRZEnd));
+        detailLinePoints.push(new THREE.Vector3(wiperRXEnd, wiperRYEnd + wiperThickness/2, wiperRZEnd));
+
+        const wiperLXEnd = windshieldX - 0.02;
+        const wiperLYEnd = wiperBaseY + wiperLength * Math.sin(Math.PI - wiperAngle);
+        const wiperLZEnd = wiperPivotZ + wiperLength * Math.cos(Math.PI - wiperAngle);
+        allLinePoints.push(new THREE.Vector3(windshieldX - 0.02, wiperBaseY, wiperPivotZ));
+        allLinePoints.push(new THREE.Vector3(wiperLXEnd, wiperLYEnd, wiperLZEnd));
+        detailLinePoints.push(new THREE.Vector3(wiperLXEnd, wiperLYEnd - wiperThickness/2, wiperLZEnd));
+        detailLinePoints.push(new THREE.Vector3(wiperLXEnd, wiperLYEnd + wiperThickness/2, wiperLZEnd));
+
+        const markerLightY = topFrontPeakY - 0.05;
+        const markerLightX = topFrontPeakX - 0.1;
+        const markerLightZPositions = [-halfW * 0.7, -halfW * 0.3, halfW * 0.3, halfW * 0.7];
+        markerLightZPositions.forEach(zPos => {
+            addCircleOutlineYZ(markerLightX, markerLightY, zPos, 0.05, 0.05, 8, detailLinePoints);
+        });
+
+        const plateY = frontBumperTopY - 0.05;
+        const plateHeight = 0.15;
+        const plateWidth = 0.3;
+        addRectangleYZ(frontFaceX - 0.01, plateY - plateHeight/2, -plateWidth/2, plateY + plateHeight/2, plateWidth/2, detailLinePoints);
+
+        // 3. Roof Details
+        const acWidth = halfW * 0.7;
+        const acLength = busLength * 0.3;
+        const acHeight = 0.25;
+        const acY = topFrontPeakY + 0.02;
+        const acXStart = -acLength / 2;
+        const acXEnd = acLength / 2;
+
+        addRectangle(acXStart, acY, acXEnd, acY + acHeight, acWidth, allLinePoints);
+        addRectangle(acXStart, acY, acXEnd, acY + acHeight, -acWidth, allLinePoints);
+        allLinePoints.push(new THREE.Vector3(acXStart, acY + acHeight, acWidth)); allLinePoints.push(new THREE.Vector3(acXStart, acY + acHeight, -acWidth));
+        allLinePoints.push(new THREE.Vector3(acXEnd, acY + acHeight, acWidth)); allLinePoints.push(new THREE.Vector3(acXEnd, acY + acHeight, -acWidth));
+        allLinePoints.push(new THREE.Vector3(acXStart, acY, acWidth)); allLinePoints.push(new THREE.Vector3(acXStart, acY, -acWidth));
+        allLinePoints.push(new THREE.Vector3(acXEnd, acY, acWidth)); allLinePoints.push(new THREE.Vector3(acXEnd, acY, -acWidth));
+        addCircleOutline((acXStart+acXEnd)/2, acY + acHeight, 0, 0.15, 0.15, 12, 0, detailLinePoints);
+
+        // 6. Rear View Enhancements
+        const rearFaceX = bottomRearCornerX;
+        const rearWindowTopY = roofY * 0.9;
+        const rearWindowBottomY = floorY + 1.5;
+        addRectangleYZ(rearFaceX, rearWindowBottomY, -halfW * 0.7, rearWindowTopY, halfW * 0.7, allLinePoints);
+        addRectangleYZ(rearFaceX, floorY - 0.1, -halfW*0.9, floorY + 0.1, halfW*0.9, allLinePoints);
+        addRectangleYZ(rearFaceX-0.01, floorY + 0.5, halfW*0.7, floorY + 0.8, halfW*0.9, allLinePoints);
+        addRectangleYZ(rearFaceX-0.01, floorY + 0.5, -halfW*0.7, floorY + 0.8, -halfW*0.9, allLinePoints);
+
+        // --- Create Final Line Geometries ---
+        const busLineGeometry = new THREE.BufferGeometry().setFromPoints(allLinePoints);
+        const busLines = new THREE.LineSegments(busLineGeometry, lineMaterial);
+        busGroup.add(busLines);
+
+        const detailLineGeometry = new THREE.BufferGeometry().setFromPoints(detailLinePoints);
+        const detailLines = new THREE.LineSegments(detailLineGeometry, detailLineMaterial);
+        busGroup.add(detailLines);
+
+        // --- Wheels ---
+        const wheelGeo = new THREE.TorusGeometry(wheelRadius, wheelWidth * 0.4, 8, 24);
+        const wheelY = wheelRadius + floorY*0.5;
+
+        const wheelsData = [
+            { x: frontAxleX, z: halfW + wheelWidth/2 }, { x: frontAxleX, z: -(halfW + wheelWidth/2) },
+            { x: rearAxle1X, z: halfW + wheelWidth/2 }, { x: rearAxle1X, z: -(halfW + wheelWidth/2) },
+            { x: rearAxle2X, z: halfW + wheelWidth/2 }, { x: rearAxle2X, z: -(halfW + wheelWidth/2) }
+        ];
+
+        wheelsData.forEach(wPos => {
+            const wheel = new THREE.Mesh(wheelGeo, wheelMaterial);
+            wheel.position.set(wPos.x, wheelY, wPos.z);
+            busGroup.add(wheel);
+            const hubGeo = new THREE.CircleGeometry(wheelRadius * 0.9, 16);
+            const hub = new THREE.Mesh(hubGeo, wheelMaterial);
+            hub.position.copy(wheel.position);
+            hub.position.z += (wPos.z > 0 ? 0.09 : -0.09);
+            busGroup.add(hub);
+
+            for (let i = 0; i < 6; i++) {
+                const angle = i * Math.PI / 3;
+                const spokeLength = wheelRadius * 0.7;
+                const startPoint = new THREE.Vector3(
+                    wPos.x,
+                    wheelRadius + floorY*0.5 + wheelRadius * 0.3 * Math.sin(angle),
+                    wPos.z + wheelRadius * 0.3 * Math.cos(angle)
+                );
+                const endPoint = new THREE.Vector3(
+                    wPos.x,
+                    wheelRadius + floorY*0.5 + spokeLength * Math.sin(angle),
+                    wPos.z + spokeLength * Math.cos(angle)
+                );
+                const spokePoints = [];
+                spokePoints.push(startPoint, endPoint);
+                const spokeGeometry = new THREE.BufferGeometry().setFromPoints(spokePoints);
+                const spoke = new THREE.LineSegments(spokeGeometry, lineMaterial);
+                busGroup.add(spoke);
+            }
+
+            addCircleOutline(wPos.x, wheelY, wPos.z + (wPos.z > 0 ? wheelWidth*0.4 : -wheelWidth*0.4), wheelRadius * 0.4, wheelRadius * 0.4, 12, 0, detailLinePoints);
+            addCircleOutline(wPos.x, wheelY, wPos.z + (wPos.z > 0 ? -wheelWidth*0.4 : wheelWidth*0.4), wheelRadius * 0.4, wheelRadius * 0.4, 12, 0, detailLinePoints);
+
+            for (let i = 0; i < 5; i++) {
+                const angle = i * (Math.PI * 2 / 5);
+                const spokeEndX = wPos.x + wheelRadius * 0.8 * Math.cos(angle);
+                const spokeEndY = wheelY + wheelRadius * 0.8 * Math.sin(angle);
+                detailLinePoints.push(new THREE.Vector3(wPos.x, wheelY, wPos.z));
+                detailLinePoints.push(new THREE.Vector3(spokeEndX, spokeEndY, wPos.z));
+            }
+        });
+
+        // --- Add headlight glows ---
+        const headlightGlowGeo = new THREE.SphereGeometry(0.05, 8, 8);
+        const glowMaterial = new THREE.MeshBasicMaterial({ color: 0xFFFFFF, wireframe: false });
+        const glowOffset = 0.03;
+        busGroup.add(new THREE.Mesh(headlightGlowGeo, glowMaterial).translateX(frontFaceX - glowOffset).translateY(headlightY).translateZ(headlightZ));
+        busGroup.add(new THREE.Mesh(headlightGlowGeo, glowMaterial).translateX(frontFaceX - glowOffset).translateY(headlightY).translateZ(-headlightZ));
+
+        // --- Create Cooking Area and Food ---
+        const cookingSurfaceGroup = new THREE.Group();
+        const cookingSurfaceWidth = 1.2;
+        const cookingSurfaceLength = 1.2;
+        const cookingSurfaceY = floorY + 1.5;
+        const cookingSurfaceX = halfL * 0.3;
+        console.log(`Cooking Surface Center X: ${cookingSurfaceX.toFixed(3)}, Y: ${cookingSurfaceY.toFixed(3)}`);
+
+        const cookingSurfacePoints = [];
+        addRectangle(cookingSurfaceX - cookingSurfaceLength/2, cookingSurfaceY, cookingSurfaceX + cookingSurfaceLength/2, cookingSurfaceY, cookingSurfaceWidth/2, cookingSurfacePoints);
+        addRectangle(cookingSurfaceX - cookingSurfaceLength/2, cookingSurfaceY, cookingSurfaceX + cookingSurfaceLength/2, cookingSurfaceY, -cookingSurfaceWidth/2, cookingSurfacePoints);
+        cookingSurfacePoints.push(new THREE.Vector3(cookingSurfaceX - cookingSurfaceLength/2, cookingSurfaceY, cookingSurfaceWidth/2));
+        cookingSurfacePoints.push(new THREE.Vector3(cookingSurfaceX - cookingSurfaceLength/2, cookingSurfaceY, -cookingSurfaceWidth/2));
+        cookingSurfacePoints.push(new THREE.Vector3(cookingSurfaceX + cookingSurfaceLength/2, cookingSurfaceY, cookingSurfaceWidth/2));
+        cookingSurfacePoints.push(new THREE.Vector3(cookingSurfaceX + cookingSurfaceLength/2, cookingSurfaceY, -cookingSurfaceWidth/2));
+        addCircleOutline(cookingSurfaceX - cookingSurfaceLength/4, cookingSurfaceY, 0, 0.2, 0.2, 16, 0, cookingSurfacePoints);
+        addCircleOutline(cookingSurfaceX + cookingSurfaceLength/4, cookingSurfaceY, 0, 0.2, 0.2, 16, 0, cookingSurfacePoints);
+
+        const cookingSurfaceGeometry = new THREE.BufferGeometry().setFromPoints(cookingSurfacePoints);
+        const cookingSurface = new THREE.LineSegments(cookingSurfaceGeometry, cookingSurfaceMaterial);
+        cookingSurfaceGroup.add(cookingSurface);
+        busGroup.add(cookingSurfaceGroup);
+
+        function createFoodItem(x, y, z, size) {
+            const foodPoints = [];
+            addCircleOutline(x, y, z, size, size * 0.8, 12, 0, foodPoints);
+            const foodGeometry = new THREE.BufferGeometry().setFromPoints(foodPoints);
+            return new THREE.LineSegments(foodGeometry, foodMaterial);
+        }
+
+        const foodItems = [
+            createFoodItem(cookingSurfaceX - 0.3, cookingSurfaceY + 0.02, 0, 0.15),
+            createFoodItem(cookingSurfaceX + 0.3, cookingSurfaceY + 0.02, 0, 0.12),
+        ];
+        const foodItemsGroup = new THREE.Group();
+        foodItems.forEach((food, index) => {
+            foodItemsGroup.add(food);
+            console.log(`Food Item ${index+1} Initial Position: x=${food.position.x.toFixed(3)}, y=${food.position.y.toFixed(3)}, z=${food.position.z.toFixed(3)}`);
+        });
+        busGroup.add(foodItemsGroup);
+
+        // --- Create Robotic Arm ---
+        function createRoboticArm(isLeft) {
+            const armGroup = new THREE.Group();
+
+            const armColor = 0x666677;
+            const jointColor = 0xADD8E6;
+            const toolColor = 0xDDDDDD;
+            const baseColor = 0x444455;
+
+            const armMat = new THREE.MeshBasicMaterial({
+                color: armColor,
+                wireframe: true,
+            });
+            const jointMat = new THREE.MeshBasicMaterial({
+                color: jointColor,
+                wireframe: true,
+            });
+            const toolMat = new THREE.MeshBasicMaterial({
+                color: toolColor,
+                wireframe: true,
+            });
+            const baseMat = new THREE.MeshBasicMaterial({
+                color: baseColor,
+                wireframe: true,
+            });
+
+            const baseX = isLeft ? 0.000 : 2.700;
+            const baseY = 0.900;
+            const baseZ = 0;
+            console.log(`--- DEBUG: Creating ${isLeft ? 'Left' : 'Right'} Arm ---`);
+            console.log(`Arm Base Position: x=${baseX.toFixed(3)}, y=${baseY.toFixed(3)}, z=${baseZ.toFixed(3)}`);
+
+            const basePlateGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.1, 16);
+            const basePlateMesh = new THREE.Mesh(basePlateGeo, baseMat);
+            basePlateMesh.position.set(baseX, baseY + 0.05, 0);
+            armGroup.add(basePlateMesh);
+
+            const baseColumnGeo = new THREE.CylinderGeometry(0.3, 0.35, 0.6, 12);
+            const baseColumnMesh = new THREE.Mesh(baseColumnGeo, armMat);
+            baseColumnMesh.position.set(baseX, baseY + 0.1 + 0.3, 0);
+            armGroup.add(baseColumnMesh);
+
+            const platformGroup = new THREE.Group();
+            platformGroup.position.set(baseX, baseY + 0.1 + 0.6, 0);
+            armGroup.add(platformGroup);
+
+            const platformDiskGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.15, 16);
+            const platformDiskMesh = new THREE.Mesh(platformDiskGeo, baseMat);
+            platformDiskMesh.position.y = 0.075;
+            platformGroup.add(platformDiskMesh);
+
+            const shoulderMountGeo = new THREE.BoxGeometry(0.3, 0.3, 0.4);
+            const shoulderMountMesh = new THREE.Mesh(shoulderMountGeo, armMat);
+            shoulderMountMesh.position.y = 0.15 + 0.15;
+            platformGroup.add(shoulderMountMesh);
+
+            const shoulderPivotGeo = new THREE.CylinderGeometry(0.18, 0.18, 0.5, 12);
+            const shoulderPivotMesh = new THREE.Mesh(shoulderPivotGeo, jointMat);
+            shoulderPivotMesh.position.y = shoulderMountMesh.position.y;
+            shoulderPivotMesh.rotation.z = Math.PI / 2;
+            platformGroup.add(shoulderPivotMesh);
+
+            const upperArmGroup = new THREE.Group();
+            upperArmGroup.position.copy(shoulderPivotMesh.position);
+            platformGroup.add(upperArmGroup);
+
+            const upperArmLength = 1.5;
+            const upperArmCoreGeo = new THREE.BoxGeometry(0.2, upperArmLength, 0.2);
+            upperArmCoreGeo.translate(0, upperArmLength / 2, 0);
+            const upperArmCoreMesh = new THREE.Mesh(upperArmCoreGeo, armMat);
+            upperArmGroup.add(upperArmCoreMesh);
+
+            const upperArmPlateGeo = new THREE.BoxGeometry(0.05, upperArmLength * 0.8, 0.25);
+            const upperArmPlate1 = new THREE.Mesh(upperArmPlateGeo, armMat);
+            upperArmPlate1.position.set(0.125, upperArmLength / 2, 0);
+            upperArmGroup.add(upperArmPlate1);
+            const upperArmPlate2 = upperArmPlate1.clone();
+            upperArmPlate2.position.x = -0.125;
+            upperArmGroup.add(upperArmPlate2);
+
+            const elbowJointGroup = new THREE.Group();
+            elbowJointGroup.position.y = upperArmLength;
+            upperArmGroup.add(elbowJointGroup);
+
+            const elbowConnectorGeo = new THREE.BoxGeometry(0.25, 0.25, 0.3);
+            const elbowConnectorMesh = new THREE.Mesh(elbowConnectorGeo, armMat);
+            elbowJointGroup.add(elbowConnectorMesh);
+
+            const elbowPivotGeo = new THREE.CylinderGeometry(0.15, 0.15, 0.4, 10);
+            const elbowPivotMesh = new THREE.Mesh(elbowPivotGeo, jointMat);
+            elbowPivotMesh.rotation.z = Math.PI / 2;
+            elbowJointGroup.add(elbowPivotMesh);
+
+            const forearmGroup = new THREE.Group();
+            elbowJointGroup.add(forearmGroup);
+
+            const forearmLength = 1.2;
+            const forearmCoreGeo = new THREE.BoxGeometry(0.15, forearmLength, 0.15);
+            forearmCoreGeo.translate(0, forearmLength / 2, 0);
+            const forearmCoreMesh = new THREE.Mesh(forearmCoreGeo, armMat);
+            forearmGroup.add(forearmCoreMesh);
+
+            const forearmDetailGeo = new THREE.BoxGeometry(0.2, forearmLength * 0.6, 0.2);
+            const forearmDetailMesh = new THREE.Mesh(forearmDetailGeo, jointMat);
+            forearmDetailMesh.position.y = forearmLength * 0.5;
+            forearmGroup.add(forearmDetailMesh);
+
+            const wristJointGroup = new THREE.Group();
+            wristJointGroup.position.y = forearmLength;
+            forearmGroup.add(wristJointGroup);
+
+            const wristHousingGeo = new THREE.CylinderGeometry(0.16, 0.16, 0.25, 12);
+            const wristHousingMesh = new THREE.Mesh(wristHousingGeo, armMat);
+            wristHousingMesh.position.y = 0.125;
+            wristHousingMesh.rotation.x = Math.PI / 2;
+            wristJointGroup.add(wristHousingMesh);
+
+            const wristPivotGeo = new THREE.CylinderGeometry(0.1, 0.1, 0.3, 10);
+            const wristPivotMesh = new THREE.Mesh(wristPivotGeo, jointMat);
+            wristPivotMesh.position.y = 0.125;
+            wristPivotMesh.rotation.x = Math.PI / 2;
+            wristJointGroup.add(wristPivotMesh);
+
+            const handGroup = new THREE.Group();
+            handGroup.position.y = 0.125;
+            wristJointGroup.add(handGroup);
+
+            const handMountGeo = new THREE.BoxGeometry(0.1, 0.15, 0.1);
+            const handMountMesh = new THREE.Mesh(handMountGeo, jointMat);
+            handMountMesh.position.y = 0.075;
+            handGroup.add(handMountMesh);
+
+            const toolHolder = new THREE.Group();
+            toolHolder.position.y = 0.15;
+            handGroup.add(toolHolder);
+            console.log(`Tool Holder Group added for ${isLeft ? 'Left' : 'Right'} arm.`);
+
+            if (isLeft) {
+                const handleGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.3, 8);
+                handleGeo.translate(0, 0.15, 0);
+                const handleMesh = new THREE.Mesh(handleGeo, armMat);
+                toolHolder.add(handleMesh);
+
+                const bladeConnectorGeo = new THREE.BoxGeometry(0.06, 0.04, 0.04);
+                const bladeConnectorMesh = new THREE.Mesh(bladeConnectorGeo, jointMat);
+                bladeConnectorMesh.position.y = 0.3;
+                toolHolder.add(bladeConnectorMesh);
+
+                const bladeGeo = new THREE.BoxGeometry(0.35, 0.02, 0.25);
+                const bladeMesh = new THREE.Mesh(bladeGeo, toolMat);
+                bladeMesh.position.y = 0.3 + 0.02;
+                bladeMesh.position.z = 0.1;
+                toolHolder.add(bladeMesh);
+            } else {
+                const handleGeo = new THREE.CylinderGeometry(0.05, 0.04, 0.25, 8);
+                handleGeo.translate(0, 0.125, 0);
+                const handleMesh = new THREE.Mesh(handleGeo, armMat);
+                toolHolder.add(handleMesh);
+
+                const forkBaseGeo = new THREE.BoxGeometry(0.15, 0.05, 0.08);
+                const forkBaseMesh = new THREE.Mesh(forkBaseGeo, jointMat);
+                forkBaseMesh.position.y = 0.25;
+                toolHolder.add(forkBaseMesh);
+
+                const tineLength = 0.35;
+                const tineGeo = new THREE.BoxGeometry(0.025, tineLength, 0.025);
+                tineGeo.translate(0, tineLength / 2, 0);
+
+                const tine1 = new THREE.Mesh(tineGeo, toolMat);
+                tine1.position.set(-0.05, 0.25 + tineLength / 2, 0);
+                toolHolder.add(tine1);
+
+                const tine2 = new THREE.Mesh(tineGeo, toolMat);
+                tine2.position.set(0.05, 0.25 + tineLength / 2, 0);
+                toolHolder.add(tine2);
+            }
+
+            armGroup.userData = {
+                platform: platformGroup,
+                upperArm: upperArmGroup,
+                forearm: forearmGroup,
+                hand: handGroup,
+                toolHolder: toolHolder
+            };
+            console.log(`Arm UserData set, toolHolder reference: ${armGroup.userData.toolHolder ? 'OK' : 'MISSING'}`);
+            console.log(`------------------------------------`);
+
+            return armGroup;
+        }
+
+        const leftRoboticArm = createRoboticArm(true);
+        busGroup.add(leftRoboticArm);
+        const rightRoboticArm = createRoboticArm(false);
+        busGroup.add(rightRoboticArm);
+        rightRoboticArm.userData.forearm.rotation.x = -Math.PI * 0.75; // -135 degrees (halfway in your range)
+
+// For left arm - also setting to middle of the range
+leftRoboticArm.userData.forearm.rotation.x = -Math.PI * 0.75; //        // --- Steam/Smoke Effect ---
+        const steamParticles = new THREE.Group();
+        const steamMat = new THREE.MeshBasicMaterial({ color: 0xFFFFFF, wireframe: true, transparent: true, opacity: 0.6 });
+        for (let i = 0; i < 20; i++) {
+            const size = 0.02 + Math.random() * 0.04;
+            const steamGeo = new THREE.SphereGeometry(size, 4, 3);
+            const particle = new THREE.Mesh(steamGeo, steamMat.clone());
+            const radius = 0.4 * Math.sqrt(Math.random());
+            const angle = Math.random() * Math.PI * 2;
+            particle.position.set(
+                cookingSurfaceX + radius * Math.cos(angle),
+                cookingSurfaceY + 0.05 + Math.random() * 0.2,
+                radius * Math.sin(angle)
+            );
+            particle.userData = {
+                originalY: particle.position.y,
+                speed: 0.01 + Math.random() * 0.03,
+                offset: Math.random() * 10
+            };
+            steamParticles.add(particle);
+        }
+        busGroup.add(steamParticles);
+
+        // --- Lighting ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(5, 10, 7.5);
+        scene.add(directionalLight);
+
+        // --- Final Touches ---
+        busGroup.scale.set(1, 1, 1);
+        infoElement.textContent = "Detailed bus wireframe with static robots and animated food. Rotate with mouse.";
+
+        // --- Resize Handler ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        });
+
+        // --- Animation Functions ---
+        function animateFood(time) {
+            foodItemsGroup.children.forEach((food, index) => {
+                const yBase = cookingSurfaceY + 0.02;
+                if (index === 0) {
+                    food.position.y = yBase + Math.max(0, Math.sin(time * 1.5 * 2)) * 0.1;
+                    food.rotation.z += Math.max(0, Math.sin(time * 1.5 * 2)) * 0.1;
+                } else {
+                    food.position.x = cookingSurfaceX + 0.3 + Math.sin(time * 2.5 + index) * 0.02;
+                    food.position.z = Math.cos(time * 2.5 + index) * 0.02;
+                }
+            });
+        }
+
+        function animateSteam(time) {
+            steamParticles.children.forEach(particle => {
+                particle.position.y += particle.userData.speed;
+                particle.position.x += Math.sin(time * 2 + particle.userData.offset) * 0.002;
+                particle.position.z += Math.cos(time * 2 + particle.userData.offset) * 0.002;
+
+                const life = (particle.position.y - particle.userData.originalY) / 0.8;
+                particle.material.opacity = Math.max(0, 0.6 * (1 - life));
+
+                if (life > 1) {
+                    const radius = 0.4 * Math.sqrt(Math.random());
+                    const angle = Math.random() * Math.PI * 2;
+                    particle.position.set(
+                        cookingSurfaceX + radius * Math.cos(angle),
+                        cookingSurfaceY + 0.05 + Math.random() * 0.1,
+                        radius * Math.sin(angle)
+                    );
+                    particle.userData.originalY = particle.position.y;
+                    particle.material.opacity = 0.6;
+                }
+            });
+        }
+
+        // --- Animation Loop ---
+        const clock = new THREE.Clock();
+
+        // --- Cooking Area Bounds ---
+        const cookingAreaMinX = cookingSurfaceX - cookingSurfaceLength / 2;
+        const cookingAreaMaxX = cookingSurfaceX + cookingSurfaceLength / 2;
+        const cookingAreaMinZ = -cookingSurfaceWidth / 2;
+        const cookingAreaMaxZ = cookingSurfaceWidth / 2;
+        const cookingTargetY = cookingSurfaceY + 0.1; // Target height slightly above surface
+
+        console.log("--- DEBUG: Cooking Area Bounds ---");
+        console.log(`X: ${cookingAreaMinX.toFixed(3)} to ${cookingAreaMaxX.toFixed(3)}`);
+        console.log(`Z: ${cookingAreaMinZ.toFixed(3)} to ${cookingAreaMaxZ.toFixed(3)}`);
+        console.log(`Target Y: ${cookingTargetY.toFixed(3)}`);
+        console.log("----------------------------------");
+
+
+
+        // --- Robot Arm Animation Parameters ---
+const robotArmParams = {
+    // Rotation ranges (in radians)
+    leftArm: {
+        platformRotation: { min: -Math.PI/4, max: Math.PI/4 },
+        upperArmRotation: { min: -Math.PI/6, max: Math.PI/6 },
+        forearmRotation: { min: -Math.PI, max: -Math.PI/2 - Math.PI/4 },
+        handRotation: { min: -Math.PI/4, max: Math.PI/4 },
+        phases: { platform: 0, upperArm: 2, forearm: 4, hand: 6 }
+    },
+    rightArm: {
+        platformRotation: { min: -Math.PI/4, max: Math.PI/4 },
+        upperArmRotation: { min: -Math.PI/6, max: Math.PI/6 },
+        forearmRotation: { min: -Math.PI, max: -Math.PI/2 - Math.PI/4 },
+        handRotation: { min: -Math.PI/4, max: Math.PI/4 },
+        phases: { platform: 1, upperArm: 3, forearm: 5, hand: 7 }
+    },
+    speed: 2.5 // Animation speed factor
+};
+
+// Animation function for robotic arms
+function animateRoboticArms(time) {
+    // Left arm animation
+    leftRoboticArm.userData.platform.rotation.y = 
+        oscillate(time, robotArmParams.leftArm.platformRotation.min, 
+                      robotArmParams.leftArm.platformRotation.max, 
+                      robotArmParams.leftArm.phases.platform, robotArmParams.speed);
+    
+    leftRoboticArm.userData.upperArm.rotation.x = 
+        oscillate(time, robotArmParams.leftArm.upperArmRotation.min, 
+                      robotArmParams.leftArm.upperArmRotation.max, 
+                      robotArmParams.leftArm.phases.upperArm, robotArmParams.speed);
+    
+    leftRoboticArm.userData.forearm.rotation.x = 
+        oscillate(time, robotArmParams.leftArm.forearmRotation.min, 
+                      robotArmParams.leftArm.forearmRotation.max, 
+                      robotArmParams.leftArm.phases.forearm, robotArmParams.speed);
+    
+    leftRoboticArm.userData.hand.rotation.z = 
+        oscillate(time, robotArmParams.leftArm.handRotation.min, 
+                      robotArmParams.leftArm.handRotation.max, 
+                      robotArmParams.leftArm.phases.hand, robotArmParams.speed);
+    
+    // Right arm animation
+    rightRoboticArm.userData.platform.rotation.y = 
+        oscillate(time, robotArmParams.rightArm.platformRotation.min, 
+                      robotArmParams.rightArm.platformRotation.max, 
+                      robotArmParams.rightArm.phases.platform, robotArmParams.speed);
+    
+    rightRoboticArm.userData.upperArm.rotation.x = 
+        oscillate(time, robotArmParams.rightArm.upperArmRotation.min, 
+                      robotArmParams.rightArm.upperArmRotation.max, 
+                      robotArmParams.rightArm.phases.upperArm, robotArmParams.speed);
+    
+    rightRoboticArm.userData.forearm.rotation.x = 
+        oscillate(time, robotArmParams.rightArm.forearmRotation.min, 
+                      robotArmParams.rightArm.forearmRotation.max, 
+                      robotArmParams.rightArm.phases.forearm, robotArmParams.speed);
+    
+    rightRoboticArm.userData.hand.rotation.z = 
+        oscillate(time, robotArmParams.rightArm.handRotation.min, 
+                      robotArmParams.rightArm.handRotation.max, 
+                      robotArmParams.rightArm.phases.hand, robotArmParams.speed);
+}
+
+// Helper function to create oscillating motion
+function oscillate(time, min, max, phaseOffset, speed) {
+    const center = (max + min) / 2;
+    const amplitude = (max - min) / 2;
+    return center + amplitude * Math.sin(time * speed + phaseOffset);
+}
+    
+function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+
+    const time = clock.getElapsedTime();
+    animateFood(time);
+    animateSteam(time);
+    animateRoboticArms(time); // Add this line to animate the robotic arms
+
+    renderer.render(scene, camera);
+}
+animate()
+        console.log("Detailed Three.js bus with static robots and animated food generation complete.");
+    </script>
+</body>
+</html>

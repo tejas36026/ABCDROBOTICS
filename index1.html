@@ -1,0 +1,1132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bus - Scroll Animation + Free Look (Bus Moves)</title>
+    <style>
+        /* CSS remains the same */
+        body { margin: 0; padding: 0; overflow-x: hidden; background-color: #483d8b; color: #eee; font-family: sans-serif; height: 5000px; }
+        #busCanvas { display: block; width: 100vw; height: 100vh; position: fixed; top: 0; left: 0; }
+        #info { position: fixed; top: 10px; left: 10px; padding: 5px 10px; background-color: rgba(0,0,0,0.5); border-radius: 3px; font-size: 12px; z-index: 10; }
+        #scrollInfo { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); padding: 10px 20px; background-color: rgba(0,0,0,0.5); border-radius: 5px; font-size: 14px; text-align: center; z-index: 10; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="info">Generating scene...</div>
+    <div id="scrollInfo">Scroll down to explore</div>
+    <canvas id="busCanvas"></canvas>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- Setup ---
+        const canvas = document.getElementById('busCanvas');
+        const scene = new THREE.Scene();
+        const infoElement = document.getElementById('info');
+        const scrollInfoElement = document.getElementById('scrollInfo');
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 4000); // Increased far plane for taller junction
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x483d8b); // Dark Slate Blue background
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Softer shadows
+
+        // --- OrbitControls Setup ---
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.1;
+        controls.enableRotate = true;  // Rotation always allowed
+        controls.enableZoom = false;   // Zoom disabled during scroll animation
+        controls.enablePan = false;    // Pan disabled during scroll animation
+        controls.maxDistance = 1000; // Allow zooming out further in junction view
+
+        // --- Control State ---
+        let isFullMouseControlActive = false;
+        const initialCameraPosition = new THREE.Vector3(24, 50, 60); // Greatly increased height
+
+        const initialCameraTarget = new THREE.Vector3(0, 4, 0); // Focus higher on the bus to see tires better
+            camera.position.copy(initialCameraPosition);
+        controls.target.copy(initialCameraTarget);
+        controls.update(); // IMPORTANT: Sync OrbitControls internal state
+
+        // Helper function to get target distance for a given page
+        function getTargetDistanceForPage(pageName) {
+             // Ensure scrollAnimationParams is defined before accessing it
+            if (typeof scrollAnimationParams !== 'undefined' && scrollAnimationParams.scrollPages[pageName]) {
+                 return scrollAnimationParams.scrollPages[pageName].dist ?? controls.getDistance();
+            }
+            return controls.getDistance(); // Fallback
+        }
+
+
+        // --- Materials, Bus, Junction, Etc. ---
+        const lineMaterial = new THREE.LineBasicMaterial({ color: 0xADD8E6, linewidth: 1.5 });
+        const detailLineMaterial = new THREE.LineBasicMaterial({ color: 0x87CEEB, linewidth: 1.0 });
+        const headlightMaterial = new THREE.MeshBasicMaterial({ color: 0xFFFFFF, wireframe: true });
+        const wheelMaterial = new THREE.MeshBasicMaterial({ color: 0xADD8E6, wireframe: true }); // Kept wireframe for wheels
+        const robotMaterial = new THREE.LineBasicMaterial({ color: 0xFF4500, linewidth: 1.5 });
+        const jointMaterial = new THREE.LineBasicMaterial({ color: 0xADD8E6, linewidth: 1.8 });
+        const foodMaterial = new THREE.LineBasicMaterial({ color: 0xADD8E6, linewidth: 1.0 });
+        const cookingSurfaceMaterial = new THREE.LineBasicMaterial({ color: 0xADD8E6, linewidth: 1.2 });
+        const roadMaterial = new THREE.LineBasicMaterial({ color: 0xADD8E6, linewidth: 2.0 }); // Keep for the moving road effect
+        const laneMaterial = new THREE.LineBasicMaterial({ color: 0xFFFFFF, linewidth: 1.0 });
+        const roadEdgeMaterial = new THREE.LineBasicMaterial({ color: 0xAAAAAA, linewidth: 1.5 });
+        const whiteLineMaterial = new THREE.LineBasicMaterial({ color: 0xFFFFFF, linewidth: 1 });
+        const yellowLineMaterial = new THREE.LineBasicMaterial({ color: 0xFFFF00, linewidth: 1 });
+        const curbMaterial = new THREE.LineBasicMaterial({ color: 0x888888, linewidth: 1.5 });
+        const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.7 });
+        const lightBoxMaterial = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.5 });
+        const lightOffMaterial = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.2, emissive: 0x000000 });
+        const redLightMaterial = new THREE.MeshStandardMaterial({ color: 0xFF0000, roughness: 0.2, emissive: 0xFF0000, emissiveIntensity: 0.8 });
+        const yellowLightMaterial = new THREE.MeshStandardMaterial({ color: 0xFFFF00, roughness: 0.2, emissive: 0xFFFF00, emissiveIntensity: 0.8 });
+        const greenLightMaterial = new THREE.MeshStandardMaterial({ color: 0x00FF00, roughness: 0.2, emissive: 0x00FF00, emissiveIntensity: 0.8 });
+
+        // *** NEW: Solid Pillar Material ***
+        const pillarMaterial = new THREE.MeshStandardMaterial({ color: 0x483d8b, roughness: 0.8, metalness: 0.1 }); // Concrete look
+        const singleRoadSurfaceMaterial = new THREE.MeshStandardMaterial({
+             color: 0x483d8b, // Dark asphalt color
+             roughness: 0.8,
+             metalness: 0.0,
+             side: THREE.DoubleSide // Render both sides in case of issues
+        });
+        const junctionGroundRoadMaterial = new THREE.MeshBasicMaterial({ color: 0x505050, side: THREE.DoubleSide }); // Slightly darker gray for junction ground
+        // *** NEW: Solid Flyover Road Surface Material ***
+        const flyoverRoadMaterial = new THREE.MeshStandardMaterial({
+             color: 0x483d8b, // Dark asphalt color
+             roughness: 0.8,
+             metalness: 0.0,
+             side: THREE.DoubleSide // Render both sides in case of issues
+        });
+
+        // *** Ground Material (Matches background) ***
+        const groundMaterial = new THREE.MeshBasicMaterial({ color: 0x483d8b });
+
+        const busColorMaterials = [
+            new THREE.LineBasicMaterial({ color: 0xADD8E6, linewidth: 1.5 }), // Original Blue (For main bus)
+            // Different materials for junction buses if needed, or use the same line material
+            new THREE.LineBasicMaterial({ color: 0xADD8E6, linewidth: 1.5 }), // Orange
+            new THREE.LineBasicMaterial({ color: 0xADD8E6, linewidth: 1.5 }), // Green
+            new THREE.LineBasicMaterial({ color: 0xADD8E6, linewidth: 1.5 }), // Yellow
+            new THREE.LineBasicMaterial({ color: 0xADD8E6, linewidth: 1.5 }), // Pink
+            new THREE.LineBasicMaterial({ color: 0xADD8E6, linewidth: 1.5 })  // Cyan
+        ];
+
+        // --- Bus Group and Dimensions (Unchanged) ---
+        const busGroup = new THREE.Group(); scene.add(busGroup); const busLength = 8; const busWidth = 2.5; const busHeight = 3.5; const floorY = 0.4; const roofY = busHeight; 
+        const wheelRadius = 0.5;
+         const wheelWidth = 0.3; const halfL = busLength / 2; const halfW = busWidth / 2; const frontAxleX = -halfL * 0.7; const rearAxle1X = halfL * 0.35; const rearAxle2X = halfL * 0.7; const allLinePoints = []; const detailLinePoints = [];        // --- Geometry Generation Functions (unchanged) ---
+        function addCurvePoints(curve, segments, pointArray) { const points = curve.getPoints(segments); for (let i = 0; i < points.length - 1; i++) { pointArray.push(points[i], points[i + 1]); } }
+
+        function addRectangle(x1, y1, x2, y2, z, pointArray) { pointArray.push(new THREE.Vector3(x1, y1, z)); pointArray.push(new THREE.Vector3(x2, y1, z)); pointArray.push(new THREE.Vector3(x2, y1, z)); pointArray.push(new THREE.Vector3(x2, y2, z)); pointArray.push(new THREE.Vector3(x2, y2, z)); pointArray.push(new THREE.Vector3(x1, y2, z)); pointArray.push(new THREE.Vector3(x1, y2, z)); pointArray.push(new THREE.Vector3(x1, y1, z)); }
+        function addRectangleYZ(x, y1, z1, y2, z2, pointArray) { pointArray.push(new THREE.Vector3(x, y1, z1)); pointArray.push(new THREE.Vector3(x, y1, z2)); pointArray.push(new THREE.Vector3(x, y1, z2)); pointArray.push(new THREE.Vector3(x, y2, z2)); pointArray.push(new THREE.Vector3(x, y2, z2)); pointArray.push(new THREE.Vector3(x, y2, z1)); pointArray.push(new THREE.Vector3(x, y2, z1)); pointArray.push(new THREE.Vector3(x, y1, z1)); }
+        function addCircleOutline(centerX, centerY, centerZ, radiusX, radiusY, segments, rotation, pointArray) { const points = []; for (let i = 0; i <= segments; i++) { const angle = (i / segments) * Math.PI * 2 + rotation; points.push(new THREE.Vector3( centerX + radiusX * Math.cos(angle), centerY + radiusY * Math.sin(angle), centerZ )); } for (let i = 0; i < points.length - 1; i++) { pointArray.push(points[i], points[i+1]); } pointArray.push(points[points.length-1], points[0]); }
+        function addCircleOutlineYZ(centerX, centerY, centerZ, radiusY, radiusZ, segments, pointArray) { const points = []; for (let i = 0; i <= segments; i++) { const angle = (i / segments) * Math.PI * 2; points.push(new THREE.Vector3( centerX, centerY + radiusY * Math.sin(angle), centerZ + radiusZ * Math.cos(angle) )); } for (let i = 0; i < points.length - 1; i++) { pointArray.push(points[i], points[i+1]); } pointArray.push(points[points.length-1], points[0]); }
+        function addGridYZ(x, y1, z1, y2, z2, rowsCount, colsCount, pointArray) { const width = z2 - z1; const height = y2 - y1; for (let i = 0; i <= rowsCount; i++) { const y = y1 + (height * i / rowsCount); pointArray.push(new THREE.Vector3(x, y, z1)); pointArray.push(new THREE.Vector3(x, y, z2)); } for (let i = 0; i <= colsCount; i++) { const z = z1 + (width * i / colsCount); pointArray.push(new THREE.Vector3(x, y1, z)); pointArray.push(new THREE.Vector3(x, y2, z)); } }
+        function addLine(x1, y1, z1, x2, y2, z2, pointArray) { pointArray.push(new THREE.Vector3(x1, y1, z1)); pointArray.push(new THREE.Vector3(x2, y2, z2)); }
+        function generateBezierCurve(points, closed = false) { const curve = new THREE.CatmullRomCurve3(points); curve.closed = closed; return curve; } // Using CatmullRom for smoother curves
+
+        // --- Pillar Function (Solid Mesh) ---
+        function createPillar(x, yBase, z, height, group) { if (height < 0.5) return; const pillarRadiusBottom = 1; const pillarRadiusTop = 1.2; const pillarGeo = new THREE.CylinderGeometry(pillarRadiusTop, pillarRadiusBottom, height, 12); const pillar = new THREE.Mesh(pillarGeo, pillarMaterial); pillar.position.set(x, yBase + height / 2, z); pillar.castShadow = true; group.add(pillar); }
+        
+        // Create a static road group instead of moving road
+        const staticRoadGroup = new THREE.Group();
+        scene.add(staticRoadGroup);
+
+        // --- Create Custom Oval/Rounded Rectangle Track ---
+        const roadGroup = new THREE.Group();
+        
+        // Define the track parameters
+        const trackWidth =  36  ;  // Width of the track
+        const trackLength = 120; // Length of the oval's straight sections
+        const trackRadius = 110; // Radius of the curved sections
+        const roadY = 0.11;     // Height of the road
+        
+        // Calculate the path for a rounded rectangle/oval
+        const trackPath = [];
+        const numCurveSegments = 200; // Number of segments for each curve
+        
+        // Top right curve
+        // for (let i = 0; i <= numCurveSegments; i++) {
+        //     const angle = (i / numCurveSegments) * Math.PI / 2;
+        //     const x = trackLength/2 + trackRadius * Math.cos(Math.PI - angle);
+        //     const z = trackRadius * Math.sin(Math.PI - angle);
+        //     trackPath.push(new THREE.Vector3(x, roadY, z));
+        // }
+        
+        // Top left curve
+        for (let i = 0; i <= numCurveSegments; i++) {
+            const angle = (i / numCurveSegments) * Math.PI / 2;
+            const x = -trackLength/2 - trackRadius * Math.cos(angle);
+            const z = trackRadius * Math.sin(angle);
+            trackPath.push(new THREE.Vector3(x, roadY, z));
+        }
+        
+        // Bottom left curve
+        for (let i = 0; i <= numCurveSegments; i++) {
+            const angle = (i / numCurveSegments) * Math.PI / 2;
+            const x = -trackLength/2 - trackRadius * Math.cos(Math.PI/2 + angle);
+            const z = -trackRadius * Math.sin(Math.PI/2 + angle);
+            trackPath.push(new THREE.Vector3(x, roadY, z));
+        }
+        
+        // Bottom right curve
+        // for (let i = 0; i <= numCurveSegments; i++) {
+        //     const angle = (i / numCurveSegments) * Math.PI / 2;
+        //     const x = trackLength/2 + trackRadius * Math.cos(Math.PI + angle);
+        //     const z = -trackRadius * Math.sin(Math.PI + angle);
+        //     trackPath.push(new THREE.Vector3(x, roadY, z));
+        // }
+        
+        // Create the track curve for animation
+        const trackCurve = new THREE.CatmullRomCurve3(trackPath);
+        trackCurve.closed = true;
+        
+        // Generate the visual track
+        // 1. Create the outer and inner edges
+        const trackEdgePoints = [];
+        const numPathPoints = 100;
+        const trackOuterPoints = [];
+        const trackInnerPoints = [];
+        
+        for (let i = 0; i < numPathPoints; i++) {
+            const t = i / numPathPoints;
+            const point = trackCurve.getPointAt(t);
+            const tangent = trackCurve.getTangentAt(t).normalize();
+            const normal = new THREE.Vector3(0, 1, 0);
+            const binormal = new THREE.Vector3().crossVectors(tangent, normal).normalize();
+            
+            const halfWidth = trackWidth / 2;
+            const innerPoint = point.clone().addScaledVector(binormal, -halfWidth);
+            const outerPoint = point.clone().addScaledVector(binormal, halfWidth);
+            
+            trackInnerPoints.push(innerPoint);
+            trackOuterPoints.push(outerPoint);
+            
+            if (i > 0) {
+                // Add outer edge
+                trackEdgePoints.push(trackOuterPoints[i-1], trackOuterPoints[i]);
+                // Add inner edge
+                trackEdgePoints.push(trackInnerPoints[i-1], trackInnerPoints[i]);
+            }
+        }
+        
+        // Close the loop
+        trackEdgePoints.push(trackOuterPoints[numPathPoints-1], trackOuterPoints[0]);
+        trackEdgePoints.push(trackInnerPoints[numPathPoints-1], trackInnerPoints[0]);
+        
+        // Create edge geometry
+        const trackEdgeGeometry = new THREE.BufferGeometry().setFromPoints(trackEdgePoints);
+        const trackEdges = new THREE.LineSegments(trackEdgeGeometry, roadEdgeMaterial);
+        roadGroup.add(trackEdges);
+        
+        // 2. Create the center lane line (dashed)
+        const lanePoints = [];
+        const dashLength = 2;
+        const gapLength = 3;
+        let accumulatedLength = 0;
+        let isDrawing = true;
+        
+        for (let i = 0; i < numPathPoints; i++) {
+            const t = i / numPathPoints;
+            const point = trackCurve.getPointAt(t);
+            
+            if (i > 0) {
+                const prevPoint = trackCurve.getPointAt((i-1) / numPathPoints);
+                const segmentLength = point.distanceTo(prevPoint);
+                accumulatedLength += segmentLength;
+                
+                if (isDrawing && accumulatedLength > dashLength) {
+                    lanePoints.push(prevPoint, point);
+                    isDrawing = false;
+                    accumulatedLength = 0;
+                } else if (!isDrawing && accumulatedLength > gapLength) {
+                    isDrawing = true;
+                    accumulatedLength = 0;
+                }
+            }
+        }
+        
+        const laneGeometry = new THREE.BufferGeometry().setFromPoints(lanePoints);
+        const laneLine = new THREE.LineSegments(laneGeometry, laneMaterial);
+        roadGroup.add(laneLine);
+        
+        // 3. Create the road surface
+        const roadSurfaceShape = new THREE.Shape();
+        
+        // Start from first outer point
+        roadSurfaceShape.moveTo(trackOuterPoints[0].x, trackOuterPoints[0].z);
+        
+        // Add outer points to the shape
+        for (let i = 1; i < trackOuterPoints.length; i++) {
+            roadSurfaceShape.lineTo(trackOuterPoints[i].x, trackOuterPoints[i].z);
+        }
+        roadSurfaceShape.lineTo(trackOuterPoints[0].x, trackOuterPoints[0].z);
+        
+        // Add inner points as a hole (going in reverse to make a hole)
+        const holePath = new THREE.Path();
+        holePath.moveTo(trackInnerPoints[0].x, trackInnerPoints[0].z);
+        for (let i = trackInnerPoints.length - 1; i > 0; i--) {
+            holePath.lineTo(trackInnerPoints[i].x, trackInnerPoints[i].z);
+        }
+        holePath.lineTo(trackInnerPoints[0].x, trackInnerPoints[0].z);
+        roadSurfaceShape.holes.push(holePath);
+        
+        const roadSurfaceGeometry = new THREE.ShapeGeometry(roadSurfaceShape);
+        const roadSurface = new THREE.Mesh(roadSurfaceGeometry, singleRoadSurfaceMaterial);
+        roadSurface.rotation.x = -Math.PI / 2;
+        roadSurface.position.y = roadY - 0.002; // Slightly below the lines
+        roadGroup.add(roadSurface);
+        
+        staticRoadGroup.add(roadGroup);
+
+        // --- Bus Geometry Construction (unchanged - kept for brevity) ---
+        // [Your existing bus geometry generation code remains here]
+        // ... (Assume all the addLine, addRectangle, etc. calls for the bus are here) ...
+        const bottomFrontCornerX = -halfL; const bottomFrontCornerY = floorY + 0.1; const topFrontCornerX = -halfL; const topFrontCornerY = roofY * 0.75; const topFrontPeakX = -halfL * 0.15; const topFrontPeakY = roofY; const topRearCornerX = halfL * 0.98; const topRearCornerY = roofY * 0.90; const bottomRearCornerX = halfL; const bottomRearCornerY = floorY;
+        for (let side = 0; side < 2; side++) { const z = (side === 0) ? halfW : -halfW; const zSign = (side === 0) ? 1 : -1; const bottomFront = new THREE.Vector3(bottomFrontCornerX * 0.95, bottomFrontCornerY, z); const bottomRear = new THREE.Vector3(bottomRearCornerX, bottomRearCornerY, z); const topRear = new THREE.Vector3(topRearCornerX, topRearCornerY, z); const topFrontUpper = new THREE.Vector3(topFrontPeakX, topFrontPeakY, z); const topFrontLower = new THREE.Vector3(topFrontCornerX, topFrontCornerY, z); const roofCurve = new THREE.CatmullRomCurve3([ topRear, topFrontUpper ]); addCurvePoints(roofCurve, 30, allLinePoints); const frontTopCurve = new THREE.CatmullRomCurve3([ topFrontUpper, new THREE.Vector3(-halfL * 0.93, roofY * 0.9, z), topFrontLower ]); addCurvePoints(frontTopCurve, 10, allLinePoints); const frontPillarCurve = new THREE.CatmullRomCurve3([ topFrontLower, new THREE.Vector3(-halfL * 1.02, floorY + 0.5, z), bottomFront ]); addCurvePoints(frontPillarCurve, 8, allLinePoints); const wheelArchRadius = wheelRadius + 0.1; const frontArchStartX = frontAxleX - wheelArchRadius; const frontArchEndX = frontAxleX + wheelArchRadius; const rearArch1StartX = rearAxle1X - wheelArchRadius; const rearArch1EndX = rearAxle1X + wheelArchRadius; const rearArch2StartX = rearAxle2X - wheelArchRadius; const rearArch2EndX = rearAxle2X + wheelArchRadius; allLinePoints.push(bottomFront, new THREE.Vector3(frontArchStartX, floorY, z)); allLinePoints.push(new THREE.Vector3(frontArchEndX, floorY, z), new THREE.Vector3(rearArch1StartX, floorY, z)); if (rearArch1EndX < rearArch2StartX) { allLinePoints.push(new THREE.Vector3(rearArch1EndX, floorY, z), new THREE.Vector3(rearArch2StartX, floorY, z)); } allLinePoints.push(new THREE.Vector3(rearArch2EndX, floorY, z), bottomRear); allLinePoints.push(bottomRear, topRear); const windowTopY = roofY * 0.88; const windowBottomY = floorY + 1.3; const windowRearX = halfL * 0.9; const windowFrontX = topFrontCornerX + 0.2; addRectangle(windowFrontX, windowBottomY, windowRearX, windowTopY, z, allLinePoints); const compartmentBottomY = floorY - 0.05; const compartmentTopY = floorY + 0.6; addRectangle(frontArchEndX + 0.1, compartmentBottomY, rearArch1StartX - 0.1, compartmentTopY, z, allLinePoints); if (rearArch1EndX < rearArch2StartX) { addRectangle(rearArch1EndX + 0.1, compartmentBottomY, rearArch2StartX - 0.1, compartmentTopY, z, allLinePoints); } addRectangle(rearArch2EndX + 0.1, compartmentBottomY, halfL * 0.95, compartmentTopY, z, allLinePoints); if (side === 1) { const doorWidth = 0.9; const doorFrontX = frontArchEndX + 0.1; const doorRearX = doorFrontX + doorWidth; const doorTopY = windowBottomY - 0.05; const doorBottomY = floorY; addRectangle(doorFrontX, doorBottomY, doorRearX, doorTopY, z, allLinePoints); detailLinePoints.push(new THREE.Vector3(doorRearX - 0.15, (doorTopY+doorBottomY)/2, z)); detailLinePoints.push(new THREE.Vector3(doorRearX - 0.05, (doorTopY+doorBottomY)/2, z)); } const headlightSideY = floorY + 0.4; const taillightSideY = floorY + 0.6; allLinePoints.push(new THREE.Vector3(bottomFrontCornerX * 0.98, headlightSideY - 0.1, z)); allLinePoints.push(new THREE.Vector3(bottomFrontCornerX * 0.98, headlightSideY + 0.1, z)); allLinePoints.push(new THREE.Vector3(bottomRearCornerX * 0.98, taillightSideY - 0.1, z)); allLinePoints.push(new THREE.Vector3(bottomRearCornerX * 0.98, taillightSideY + 0.1, z)); const mirrorY = floorY + 1.7; const mirrorBaseX = topFrontCornerX + 0.1; const mirrorBaseZ = zSign * (halfW + 0.05); const mirrorOuterX = mirrorBaseX - 0.15; const mirrorOuterZ = zSign * (halfW + 0.35); const mirrorTopY = mirrorY + 0.25; const mirrorBottomY = mirrorY - 0.25; const mirrorThickness = 0.05; allLinePoints.push(new THREE.Vector3(mirrorBaseX, mirrorY, mirrorBaseZ)); allLinePoints.push(new THREE.Vector3(mirrorBaseX, mirrorTopY + 0.1, mirrorBaseZ)); allLinePoints.push(new THREE.Vector3(mirrorBaseX, mirrorTopY + 0.1, mirrorBaseZ)); allLinePoints.push(new THREE.Vector3(mirrorOuterX, mirrorTopY, mirrorOuterZ)); allLinePoints.push(new THREE.Vector3(mirrorOuterX, mirrorTopY, mirrorOuterZ)); allLinePoints.push(new THREE.Vector3(mirrorOuterX, mirrorBottomY, mirrorOuterZ)); allLinePoints.push(new THREE.Vector3(mirrorOuterX, mirrorBottomY, mirrorOuterZ)); allLinePoints.push(new THREE.Vector3(mirrorBaseX, mirrorBottomY - 0.1, mirrorBaseZ)); allLinePoints.push(new THREE.Vector3(mirrorBaseX, mirrorBottomY - 0.1, mirrorBaseZ)); allLinePoints.push(new THREE.Vector3(mirrorBaseX, mirrorY, mirrorBaseZ)); addRectangleYZ(mirrorOuterX - mirrorThickness/2, mirrorBottomY, mirrorOuterZ, mirrorTopY, mirrorOuterZ, allLinePoints); addRectangleYZ(mirrorOuterX + mirrorThickness/2, mirrorBottomY, mirrorOuterZ, mirrorTopY, mirrorOuterZ, allLinePoints); allLinePoints.push(new THREE.Vector3(mirrorOuterX - mirrorThickness/2, mirrorTopY, mirrorOuterZ)); allLinePoints.push(new THREE.Vector3(mirrorOuterX + mirrorThickness/2, mirrorTopY, mirrorOuterZ)); allLinePoints.push(new THREE.Vector3(mirrorOuterX - mirrorThickness/2, mirrorBottomY, mirrorOuterZ)); allLinePoints.push(new THREE.Vector3(mirrorOuterX + mirrorThickness/2, mirrorBottomY, mirrorOuterZ)); const glassX = mirrorOuterX - mirrorThickness / 2 - 0.01; addRectangleYZ(glassX, mirrorBottomY + 0.02, mirrorOuterZ, mirrorTopY - 0.02, mirrorOuterZ, detailLinePoints); }
+        allLinePoints.push(new THREE.Vector3(topFrontCornerX, topFrontCornerY, halfW)); allLinePoints.push(new THREE.Vector3(topFrontCornerX, topFrontCornerY, -halfW)); allLinePoints.push(new THREE.Vector3(bottomFrontCornerX*0.95, bottomFrontCornerY, halfW)); allLinePoints.push(new THREE.Vector3(bottomFrontCornerX*0.95, bottomFrontCornerY, -halfW)); allLinePoints.push(new THREE.Vector3(topRearCornerX, topRearCornerY, halfW)); allLinePoints.push(new THREE.Vector3(topRearCornerX, topRearCornerY, -halfW)); allLinePoints.push(new THREE.Vector3(bottomRearCornerX, bottomRearCornerY, halfW)); allLinePoints.push(new THREE.Vector3(bottomRearCornerX, bottomRearCornerY, -halfW)); allLinePoints.push(new THREE.Vector3(topFrontPeakX, topFrontPeakY, halfW)); allLinePoints.push(new THREE.Vector3(topFrontPeakX, topFrontPeakY, -halfW));
+        const frontFaceX = bottomFrontCornerX; const frontBumperBottomY = floorY - 0.15; const frontBumperTopY = floorY + 0.15; const frontBumperWidth = halfW * 1.05; addRectangleYZ(frontFaceX, frontBumperBottomY, -frontBumperWidth, frontBumperTopY, frontBumperWidth, allLinePoints); allLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperTopY, frontBumperWidth)); allLinePoints.push(new THREE.Vector3(bottomFrontCornerX*0.95, bottomFrontCornerY, halfW)); allLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperTopY, -frontBumperWidth)); allLinePoints.push(new THREE.Vector3(bottomFrontCornerX*0.95, bottomFrontCornerY, -halfW)); allLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperBottomY, frontBumperWidth)); allLinePoints.push(new THREE.Vector3(bottomFrontCornerX*0.95, floorY, halfW)); allLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperBottomY, -frontBumperWidth)); allLinePoints.push(new THREE.Vector3(bottomFrontCornerX*0.95, floorY, -halfW)); const lipY = frontBumperBottomY - 0.05; const lipX = frontFaceX + 0.05; const lipWidth = frontBumperWidth * 0.9; addRectangleYZ(lipX, lipY, -lipWidth, frontBumperBottomY, lipWidth, detailLinePoints); detailLinePoints.push(new THREE.Vector3(lipX, frontBumperBottomY, lipWidth)); detailLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperBottomY, frontBumperWidth)); detailLinePoints.push(new THREE.Vector3(lipX, frontBumperBottomY, -lipWidth)); detailLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperBottomY, -frontBumperWidth)); detailLinePoints.push(new THREE.Vector3(lipX, lipY, lipWidth)); detailLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperBottomY, frontBumperWidth)); detailLinePoints.push(new THREE.Vector3(lipX, lipY, -lipWidth)); detailLinePoints.push(new THREE.Vector3(frontFaceX, frontBumperBottomY, -frontBumperWidth)); const fogLightY = frontBumperBottomY + 0.1; const fogLightZ = halfW * 0.6; addCircleOutlineYZ(frontFaceX - 0.01, fogLightY, fogLightZ, 0.08, 0.08, 12, detailLinePoints); addCircleOutlineYZ(frontFaceX - 0.01, fogLightY, -fogLightZ, 0.08, 0.08, 12, detailLinePoints); const towHookY = frontBumperBottomY + 0.05; const towHookZ = halfW * 0.3; addRectangleYZ(frontFaceX - 0.01, towHookY, towHookZ - 0.05, towHookY + 0.05, towHookZ + 0.05, detailLinePoints); addRectangleYZ(frontFaceX - 0.01, towHookY, -towHookZ - 0.05, towHookY + 0.05, -towHookZ + 0.05, detailLinePoints); const grilleBottomY = frontBumperTopY + 0.05; const grilleTopY = floorY + 0.8; const grilleWidth = halfW * 0.8; const grilleX = frontFaceX - 0.02; addRectangleYZ(grilleX, grilleBottomY, -grilleWidth, grilleTopY, grilleWidth, allLinePoints); addGridYZ(grilleX - 0.01, grilleBottomY, -grilleWidth, grilleTopY, grilleWidth, 5, 10, detailLinePoints); const emblemY = (grilleBottomY + grilleTopY) / 2; addCircleOutlineYZ(grilleX - 0.02, emblemY, 0, 0.15, 0.15, 16, allLinePoints); addCircleOutlineYZ(grilleX - 0.03, emblemY, 0, 0.10, 0.10, 12, detailLinePoints); const headlightY = floorY + 0.5; const headlightZ = halfW * 0.7; const headlightOuterRadius = 0.25; const headlightInnerRadius = 0.18; const indicatorWidth = 0.15; const indicatorHeight = 0.1; const indicatorY = headlightY; const indicatorZ = headlightZ + headlightOuterRadius + 0.05; addCircleOutlineYZ(frontFaceX - 0.01, headlightY, headlightZ, headlightOuterRadius, headlightOuterRadius * 0.8, 16, allLinePoints); addCircleOutlineYZ(frontFaceX - 0.01, headlightY, -headlightZ, headlightOuterRadius, headlightOuterRadius * 0.8, 16, allLinePoints); addCircleOutlineYZ(frontFaceX - 0.02, headlightY, headlightZ, headlightInnerRadius, headlightInnerRadius * 0.8, 12, detailLinePoints); addCircleOutlineYZ(frontFaceX - 0.02, headlightY, -headlightZ, headlightInnerRadius, headlightInnerRadius * 0.8, 12, detailLinePoints); addRectangleYZ(frontFaceX - 0.01, indicatorY - indicatorHeight/2, indicatorZ, indicatorY + indicatorHeight/2, indicatorZ + indicatorWidth, allLinePoints); addRectangleYZ(frontFaceX - 0.01, indicatorY - indicatorHeight/2, -indicatorZ, indicatorY + indicatorHeight/2, -indicatorZ - indicatorWidth, allLinePoints); addRectangleYZ(frontFaceX - 0.02, indicatorY - indicatorHeight/2 + 0.01, indicatorZ + 0.01, indicatorY + indicatorHeight/2 - 0.01, indicatorZ + indicatorWidth - 0.01, detailLinePoints); addRectangleYZ(frontFaceX - 0.02, indicatorY - indicatorHeight/2 + 0.01, -indicatorZ - 0.01, indicatorY + indicatorHeight/2 - 0.01, -indicatorZ - indicatorWidth + 0.01, detailLinePoints); const windshieldBottomY = grilleTopY + 0.1; const windshieldTopY = topFrontCornerY; const windshieldBottomWidth = halfW * 0.95; const windshieldTopWidth = halfW * 0.85; const windshieldX = topFrontCornerX; allLinePoints.push(new THREE.Vector3(windshieldX, windshieldBottomY, windshieldBottomWidth)); allLinePoints.push(new THREE.Vector3(windshieldX, windshieldTopY, windshieldTopWidth)); allLinePoints.push(new THREE.Vector3(windshieldX, windshieldTopY, -windshieldTopWidth)); allLinePoints.push(new THREE.Vector3(windshieldX, windshieldBottomY, -windshieldBottomWidth)); allLinePoints.push(new THREE.Vector3(windshieldX, windshieldBottomY, -windshieldBottomWidth)); allLinePoints.push(new THREE.Vector3(windshieldX, windshieldBottomY, windshieldBottomWidth)); const inset = 0.04; detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldBottomY + inset, windshieldBottomWidth - inset)); detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldTopY - inset, windshieldTopWidth - inset)); detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldTopY - inset, -windshieldTopWidth + inset)); detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldBottomY + inset, -windshieldBottomWidth + inset)); detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldBottomY + inset, -windshieldBottomWidth + inset)); detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldBottomY + inset, windshieldBottomWidth - inset)); detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldBottomY + inset, 0)); detailLinePoints.push(new THREE.Vector3(windshieldX - 0.01, windshieldTopY - inset, 0)); const wiperBaseY = windshieldBottomY + 0.05; const wiperPivotZ = halfW * 0.4; const wiperLength = 0.8; const wiperAngle = Math.PI * 0.8; const wiperThickness = 0.03; const wiperRXEnd = windshieldX - 0.02; const wiperRYEnd = wiperBaseY + wiperLength * Math.sin(wiperAngle); const wiperRZEnd = -wiperPivotZ + wiperLength * Math.cos(wiperAngle); allLinePoints.push(new THREE.Vector3(windshieldX - 0.02, wiperBaseY, -wiperPivotZ)); allLinePoints.push(new THREE.Vector3(wiperRXEnd, wiperRYEnd, wiperRZEnd)); detailLinePoints.push(new THREE.Vector3(wiperRXEnd, wiperRYEnd - wiperThickness/2, wiperRZEnd)); detailLinePoints.push(new THREE.Vector3(wiperRXEnd, wiperRYEnd + wiperThickness/2, wiperRZEnd)); const wiperLXEnd = windshieldX - 0.02; const wiperLYEnd = wiperBaseY + wiperLength * Math.sin(Math.PI - wiperAngle); const wiperLZEnd = wiperPivotZ + wiperLength * Math.cos(Math.PI - wiperAngle); allLinePoints.push(new THREE.Vector3(windshieldX - 0.02, wiperBaseY, wiperPivotZ)); allLinePoints.push(new THREE.Vector3(wiperLXEnd, wiperLYEnd, wiperLZEnd)); detailLinePoints.push(new THREE.Vector3(wiperLXEnd, wiperLYEnd - wiperThickness/2, wiperLZEnd)); detailLinePoints.push(new THREE.Vector3(wiperLXEnd, wiperLYEnd + wiperThickness/2, wiperLZEnd)); const markerLightY = topFrontPeakY - 0.05; const markerLightX = topFrontPeakX - 0.1; const markerLightZPositions = [-halfW * 0.7, -halfW * 0.3, halfW * 0.3, halfW * 0.7]; markerLightZPositions.forEach(zPos => { addCircleOutlineYZ(markerLightX, markerLightY, zPos, 0.05, 0.05, 8, detailLinePoints); }); const plateY = frontBumperTopY - 0.05; const plateHeight = 0.15; const plateWidth = 0.3; addRectangleYZ(frontFaceX - 0.01, plateY - plateHeight/2, -plateWidth/2, plateY + plateHeight/2, plateWidth/2, detailLinePoints);
+        const acWidth = halfW * 0.7; const acLength = busLength * 0.3; const acHeight = 0.25; const acY = topFrontPeakY + 0.02; const acXStart = -acLength / 2; const acXEnd = acLength / 2; addRectangle(acXStart, acY, acXEnd, acY + acHeight, acWidth, allLinePoints); addRectangle(acXStart, acY, acXEnd, acY + acHeight, -acWidth, allLinePoints); allLinePoints.push(new THREE.Vector3(acXStart, acY + acHeight, acWidth)); allLinePoints.push(new THREE.Vector3(acXStart, acY + acHeight, -acWidth)); allLinePoints.push(new THREE.Vector3(acXEnd, acY + acHeight, acWidth)); allLinePoints.push(new THREE.Vector3(acXEnd, acY + acHeight, -acWidth)); allLinePoints.push(new THREE.Vector3(acXStart, acY, acWidth)); allLinePoints.push(new THREE.Vector3(acXStart, acY, -acWidth)); allLinePoints.push(new THREE.Vector3(acXEnd, acY, acWidth)); allLinePoints.push(new THREE.Vector3(acXEnd, acY, -acWidth)); addCircleOutline((acXStart+acXEnd)/2, acY + acHeight, 0, 0.15, 0.15, 12, 0, detailLinePoints);
+        const rearFaceX = bottomRearCornerX; const rearWindowTopY = roofY * 0.9; const rearWindowBottomY = floorY + 1.5; addRectangleYZ(rearFaceX, rearWindowBottomY, -halfW * 0.7, rearWindowTopY, halfW * 0.7, allLinePoints); addRectangleYZ(rearFaceX, floorY - 0.1, -halfW*0.9, floorY + 0.1, halfW*0.9, allLinePoints); addRectangleYZ(rearFaceX-0.01, floorY + 0.5, halfW*0.7, floorY + 0.8, halfW*0.9, allLinePoints); addRectangleYZ(rearFaceX-0.01, floorY + 0.5, -halfW*0.7, floorY + 0.8, -halfW*0.9, allLinePoints);
+        const busLineGeometry = new THREE.BufferGeometry().setFromPoints(allLinePoints); const busLines = new THREE.LineSegments(busLineGeometry, lineMaterial); busGroup.add(busLines); const detailLineGeometry = new THREE.BufferGeometry().setFromPoints(detailLinePoints); const detailLines = new THREE.LineSegments(detailLineGeometry, detailLineMaterial); busGroup.add(detailLines);
+        const wheelGeo = new THREE.TorusGeometry(wheelRadius, wheelWidth * 0.4, 8, 24); const wheelY = wheelRadius + floorY*0.5;
+        const wheelsData = [ { x: frontAxleX, z: halfW + wheelWidth/2 }, { x: frontAxleX, z: -(halfW + wheelWidth/2) }, { x: rearAxle1X, z: halfW + wheelWidth/2 }, { x: rearAxle1X, z: -(halfW + wheelWidth/2) }, { x: rearAxle2X, z: halfW + wheelWidth/2 }, { x: rearAxle2X, z: -(halfW + wheelWidth/2) } ];
+        wheelsData.forEach(wPos => { const wheel = new THREE.Mesh(wheelGeo, wheelMaterial); wheel.position.set(wPos.x, wheelY, wPos.z); busGroup.add(wheel); const hubGeo = new THREE.CircleGeometry(wheelRadius * 0.9, 16); const hub = new THREE.Mesh(hubGeo, wheelMaterial); hub.position.set(wPos.x, wheelY, wPos.z); busGroup.add(hub); for (let i = 0; i < 6; i++) { const angle = i * Math.PI / 3; const spokeLength = wheelRadius * 0.7; const startPoint = new THREE.Vector3( wPos.x, wheelRadius + floorY*0.5 + wheelRadius * 0.3 * Math.sin(angle), wPos.z + wheelRadius * 0.3 * Math.cos(angle) ); const endPoint = new THREE.Vector3( wPos.x, wheelRadius + floorY*0.5 + spokeLength * Math.sin(angle), wPos.z + spokeLength * Math.cos(angle) ); const spokePoints = []; spokePoints.push(startPoint, endPoint); const spokeGeometry = new THREE.BufferGeometry().setFromPoints(spokePoints); const spoke = new THREE.LineSegments(spokeGeometry, lineMaterial); busGroup.add(spoke); } addCircleOutline(wPos.x, wheelY, wPos.z + (wPos.z > 0 ? wheelWidth*0.4 : -wheelWidth*0.4), wheelRadius * 0.4, wheelRadius * 0.4, 12, 0, detailLinePoints); addCircleOutline(wPos.x, wheelY, wPos.z + (wPos.z > 0 ? -wheelWidth*0.4 : wheelWidth*0.4), wheelRadius * 0.4, wheelRadius * 0.4, 12, 0, detailLinePoints); for (let i = 0; i < 5; i++) { const angle = i * (Math.PI * 2 / 5); const spokeEndX = wPos.x + wheelRadius * 0.8 * Math.cos(angle); const spokeEndY = wheelY + wheelRadius * 0.8 * Math.sin(angle); detailLinePoints.push(new THREE.Vector3(wPos.x, wheelY, wPos.z)); detailLinePoints.push(new THREE.Vector3(spokeEndX, spokeEndY, wPos.z)); } });
+        const headlightGlowGeo = new THREE.SphereGeometry(0.05, 8, 8); const glowMaterial = new THREE.MeshBasicMaterial({ color: 0xFFFFFF, wireframe: false }); const glowOffset = 0.03; busGroup.add(new THREE.Mesh(headlightGlowGeo, glowMaterial).translateX(frontFaceX - glowOffset).translateY(headlightY).translateZ(headlightZ)); busGroup.add(new THREE.Mesh(headlightGlowGeo, glowMaterial).translateX(frontFaceX - glowOffset).translateY(headlightY).translateZ(-headlightZ));
+        const cookingSurfaceGroup = new THREE.Group(); const cookingSurfaceWidth = 1.2; const cookingSurfaceLength = 1.2; const cookingSurfaceY = floorY + 1.5; const cookingSurfaceX = halfL * 0.3; const cookingSurfacePoints = []; addRectangle(cookingSurfaceX - cookingSurfaceLength/2, cookingSurfaceY, cookingSurfaceX + cookingSurfaceLength/2, cookingSurfaceY, cookingSurfaceWidth/2, cookingSurfacePoints); addRectangle(cookingSurfaceX - cookingSurfaceLength/2, cookingSurfaceY, cookingSurfaceX + cookingSurfaceLength/2, cookingSurfaceY, -cookingSurfaceWidth/2, cookingSurfacePoints); cookingSurfacePoints.push(new THREE.Vector3(cookingSurfaceX - cookingSurfaceLength/2, cookingSurfaceY, cookingSurfaceWidth/2)); cookingSurfacePoints.push(new THREE.Vector3(cookingSurfaceX - cookingSurfaceLength/2, cookingSurfaceY, -cookingSurfaceWidth/2)); cookingSurfacePoints.push(new THREE.Vector3(cookingSurfaceX + cookingSurfaceLength/2, cookingSurfaceY, cookingSurfaceWidth/2)); cookingSurfacePoints.push(new THREE.Vector3(cookingSurfaceX + cookingSurfaceLength/2, cookingSurfaceY, -cookingSurfaceWidth/2)); addCircleOutline(cookingSurfaceX - cookingSurfaceLength/4, cookingSurfaceY, 0, 0.2, 0.2, 16, 0, cookingSurfacePoints); addCircleOutline(cookingSurfaceX + cookingSurfaceLength/4, cookingSurfaceY, 0, 0.2, 0.2, 16, 0, cookingSurfacePoints); const cookingSurfaceGeometry = new THREE.BufferGeometry().setFromPoints(cookingSurfacePoints); const cookingSurface = new THREE.LineSegments(cookingSurfaceGeometry, cookingSurfaceMaterial); cookingSurfaceGroup.add(cookingSurface); busGroup.add(cookingSurfaceGroup);
+        function createFoodItem(x, y, z, size) { const foodPoints = []; addCircleOutline(x, y, z, size, size * 0.8, 12, 0, foodPoints); const foodGeometry = new THREE.BufferGeometry().setFromPoints(foodPoints); return new THREE.LineSegments(foodGeometry, foodMaterial); }
+        const foodItems = [ createFoodItem(cookingSurfaceX - 0.3, cookingSurfaceY + 0.02, 0, 0.15), createFoodItem(cookingSurfaceX + 0.3, cookingSurfaceY + 0.02, 0, 0.12), ]; const foodItemsGroup = new THREE.Group(); foodItems.forEach(food => { foodItemsGroup.add(food); }); busGroup.add(foodItemsGroup);
+        function createRoboticArm(isLeft) { const armGroup = new THREE.Group(); const armColor = 0x666677; const jointColor = 0xADD8E6; const toolColor = 0xDDDDDD; const baseColor = 0x444455; const armMat = new THREE.MeshBasicMaterial({ color: armColor, wireframe: true, }); const jointMat = new THREE.MeshBasicMaterial({ color: jointColor, wireframe: true, }); const toolMat = new THREE.MeshBasicMaterial({ color: toolColor, wireframe: true, }); const baseMat = new THREE.MeshBasicMaterial({ color: baseColor, wireframe: true, }); const baseX = isLeft ? 0.000 : 2.700; const baseY = 0.900; const baseZ = 0; const basePlateGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.1, 16); const basePlateMesh = new THREE.Mesh(basePlateGeo, baseMat); basePlateMesh.position.set(baseX, baseY + 0.05, 0); armGroup.add(basePlateMesh); const baseColumnGeo = new THREE.CylinderGeometry(0.3, 0.35, 0.6, 12); const baseColumnMesh = new THREE.Mesh(baseColumnGeo, armMat); baseColumnMesh.position.set(baseX, baseY + 0.1 + 0.3, 0); armGroup.add(baseColumnMesh); const platformGroup = new THREE.Group(); platformGroup.position.set(baseX, baseY + 0.1 + 0.6, 0); armGroup.add(platformGroup); const platformDiskGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.15, 16); const platformDiskMesh = new THREE.Mesh(platformDiskGeo, baseMat); platformDiskMesh.position.y = 0.075; platformGroup.add(platformDiskMesh); const shoulderMountGeo = new THREE.BoxGeometry(0.3, 0.3, 0.4); const shoulderMountMesh = new THREE.Mesh(shoulderMountGeo, armMat); shoulderMountMesh.position.y = 0.15 + 0.15; platformGroup.add(shoulderMountMesh); const shoulderPivotGeo = new THREE.CylinderGeometry(0.18, 0.18, 0.5, 12); const shoulderPivotMesh = new THREE.Mesh(shoulderPivotGeo, jointMat); shoulderPivotMesh.position.y = shoulderMountMesh.position.y; shoulderPivotMesh.rotation.z = Math.PI / 2; platformGroup.add(shoulderPivotMesh); const upperArmGroup = new THREE.Group(); upperArmGroup.position.copy(shoulderPivotMesh.position); platformGroup.add(upperArmGroup); const upperArmLength = 1.5; const upperArmCoreGeo = new THREE.BoxGeometry(0.2, upperArmLength, 0.2); upperArmCoreGeo.translate(0, upperArmLength / 2, 0); const upperArmCoreMesh = new THREE.Mesh(upperArmCoreGeo, armMat); upperArmGroup.add(upperArmCoreMesh); const upperArmPlateGeo = new THREE.BoxGeometry(0.05, upperArmLength * 0.8, 0.25); const upperArmPlate1 = new THREE.Mesh(upperArmPlateGeo, armMat); upperArmPlate1.position.set(0.125, upperArmLength / 2, 0); upperArmGroup.add(upperArmPlate1); const upperArmPlate2 = upperArmPlate1.clone(); upperArmPlate2.position.x = -0.125; upperArmGroup.add(upperArmPlate2); const elbowJointGroup = new THREE.Group(); elbowJointGroup.position.y = upperArmLength; upperArmGroup.add(elbowJointGroup); const elbowConnectorGeo = new THREE.BoxGeometry(0.25, 0.25, 0.3); const elbowConnectorMesh = new THREE.Mesh(elbowConnectorGeo, armMat); elbowJointGroup.add(elbowConnectorMesh); const elbowPivotGeo = new THREE.CylinderGeometry(0.15, 0.15, 0.4, 10); const elbowPivotMesh = new THREE.Mesh(elbowPivotGeo, jointMat); elbowPivotMesh.rotation.z = Math.PI / 2; elbowJointGroup.add(elbowPivotMesh); const forearmGroup = new THREE.Group(); elbowJointGroup.add(forearmGroup); const forearmLength = 1.2; const forearmCoreGeo = new THREE.BoxGeometry(0.15, forearmLength, 0.15); forearmCoreGeo.translate(0, forearmLength / 2, 0); const forearmCoreMesh = new THREE.Mesh(forearmCoreGeo, armMat); forearmGroup.add(forearmCoreMesh); const forearmDetailGeo = new THREE.BoxGeometry(0.2, forearmLength * 0.6, 0.2); const forearmDetailMesh = new THREE.Mesh(forearmDetailGeo, jointMat); forearmDetailMesh.position.y = forearmLength * 0.5; forearmGroup.add(forearmDetailMesh); const wristJointGroup = new THREE.Group(); wristJointGroup.position.y = forearmLength; forearmGroup.add(wristJointGroup); const wristHousingGeo = new THREE.CylinderGeometry(0.16, 0.16, 0.25, 12); const wristHousingMesh = new THREE.Mesh(wristHousingGeo, armMat); wristHousingMesh.position.y = 0.125; wristHousingMesh.rotation.x = Math.PI / 2; wristJointGroup.add(wristHousingMesh); const wristPivotGeo = new THREE.CylinderGeometry(0.1, 0.1, 0.3, 10); const wristPivotMesh = new THREE.Mesh(wristPivotGeo, jointMat); wristPivotMesh.position.y = 0.125; wristPivotMesh.rotation.x = Math.PI / 2; wristJointGroup.add(wristPivotMesh); const handGroup = new THREE.Group(); handGroup.position.y = 0.125; wristJointGroup.add(handGroup); const handMountGeo = new THREE.BoxGeometry(0.1, 0.15, 0.1); const handMountMesh = new THREE.Mesh(handMountGeo, jointMat); handMountMesh.position.y = 0.075; handGroup.add(handMountMesh); const toolHolder = new THREE.Group(); toolHolder.position.y = 0.15; handGroup.add(toolHolder); if (isLeft) { const handleGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.3, 8); handleGeo.translate(0, 0.15, 0); const handleMesh = new THREE.Mesh(handleGeo, armMat); toolHolder.add(handleMesh); const bladeConnectorGeo = new THREE.BoxGeometry(0.06, 0.04, 0.04); const bladeConnectorMesh = new THREE.Mesh(bladeConnectorGeo, jointMat); bladeConnectorMesh.position.y = 0.3; toolHolder.add(bladeConnectorMesh); const bladeGeo = new THREE.BoxGeometry(0.35, 0.02, 0.25); const bladeMesh = new THREE.Mesh(bladeGeo, toolMat); bladeMesh.position.y = 0.3 + 0.02; bladeMesh.position.z = 0.1; toolHolder.add(bladeMesh); } else { const handleGeo = new THREE.CylinderGeometry(0.05, 0.04, 0.25, 8); handleGeo.translate(0, 0.125, 0); const handleMesh = new THREE.Mesh(handleGeo, armMat); toolHolder.add(handleMesh); const forkBaseGeo = new THREE.BoxGeometry(0.15, 0.05, 0.08); const forkBaseMesh = new THREE.Mesh(forkBaseGeo, jointMat); forkBaseMesh.position.y = 0.25; toolHolder.add(forkBaseMesh); const tineLength = 0.35; const tineGeo = new THREE.BoxGeometry(0.025, tineLength, 0.025); tineGeo.translate(0, tineLength / 2, 0); const tine1 = new THREE.Mesh(tineGeo, toolMat); tine1.position.set(-0.05, 0.25 + tineLength / 2, 0); toolHolder.add(tine1); const tine2 = new THREE.Mesh(tineGeo, toolMat); tine2.position.set(0.05, 0.25 + tineLength / 2, 0); toolHolder.add(tine2); } armGroup.userData = { platform: platformGroup, upperArm: upperArmGroup, forearm: forearmGroup, hand: handGroup, toolHolder: toolHolder }; return armGroup; }
+        const leftRoboticArm = createRoboticArm(true); busGroup.add(leftRoboticArm); const rightRoboticArm = createRoboticArm(false); busGroup.add(rightRoboticArm); rightRoboticArm.userData.forearm.rotation.x = -Math.PI * 0.75; leftRoboticArm.userData.forearm.rotation.x = -Math.PI * 0.75;
+        const steamParticles = new THREE.Group(); const steamMat = new THREE.MeshBasicMaterial({ color: 0xFFFFFF, wireframe: true, transparent: true, opacity: 0.6 }); for (let i = 0; i < 20; i++) { const size = 0.02 + Math.random() * 0.04; const steamGeo = new THREE.SphereGeometry(size, 4, 3); const particle = new THREE.Mesh(steamGeo, steamMat.clone()); const radius = 0.4 * Math.sqrt(Math.random()); const angle = Math.random() * Math.PI * 2; particle.position.set( cookingSurfaceX + radius * Math.cos(angle), cookingSurfaceY + 0.05 + Math.random() * 0.2, radius * Math.sin(angle) ); particle.userData = { originalY: particle.position.y, speed: 0.01 + Math.random() * 0.03, offset: Math.random() * 10 }; steamParticles.add(particle); } busGroup.add(steamParticles);
+        busGroup.scale.set(6, 6, 6); // Changed from 2,2,2
+
+        // --- Scroll Animation Parameters ---
+        const cookingSurfaceTarget = new THREE.Vector3(cookingSurfaceX * busGroup.scale.x, (cookingSurfaceY + 0.5) * busGroup.scale.y, 0); // Adjusted for larger bus scale
+        
+        
+        const scrollAnimationParams = {
+    currentScrollY: 0,
+    scrollPages: {
+        straightRoad:   { start: 0,    end: 0.2,  dist: 80 }, // Fixed distance value
+        zoomToBus:      { start: 0.2,  end: 0.35, dist: 40 }, // Fixed closer distance
+        zoomToFunction: { start: 0.35, end: 0.5,  dist: 20 }, // Even closer
+        panToJunction:  { start: 0.5,  end: 0.8,  dist: 120 }, // Pull back for junction view
+        fullJunction:   { start: 0.7,  end: 0.98, dist: 300 }  // Wide view of junction
+    },
+    currentAnimationPage: 'straightRoad'
+};
+        // --- Junction Setup ---
+        const junctionGroup = new THREE.Group(); scene.add(junctionGroup); junctionGroup.visible = false;
+        const groundGroup = new THREE.Group(); const nsFlyoverGroup = new THREE.Group(); const ewFlyoverGroup = new THREE.Group(); const neFlyoverGroup = new THREE.Group(); const nwFlyoverGroup = new THREE.Group(); const seFlyoverGroup = new THREE.Group(); const swFlyoverGroup = new THREE.Group(); const nsUTurnGroup = new THREE.Group(); const ewUTurnGroup = new THREE.Group(); const pillarGroup = new THREE.Group(); // Specific group for pillars
+        const junctionBusGroup = new THREE.Group();
+        junctionGroup.add( groundGroup, nsFlyoverGroup, ewFlyoverGroup, neFlyoverGroup, nwFlyoverGroup, seFlyoverGroup, swFlyoverGroup, nsUTurnGroup, ewUTurnGroup, pillarGroup /* junctionBusGroup added later */ );
+
+        // --- Junction Parameters ---
+        const junctionRoadWidth = 30; const laneWidth = junctionRoadWidth / 4; const intersectionSize = junctionRoadWidth * 3; const junctionRoadLength = 300; // Reduced length slightly to fit view better
+        const curbOffset = 0.15; const sidewalkWidth = 3; const cornerRadius = laneWidth * 300; const halfIntersection = intersectionSize / 2; const halfRoadWidth = junctionRoadWidth / 2;
+
+        // *** Define 6 distinct and MUCH HIGHER flyover heights ***
+        const h_ew_uturn = 30;      // Lowest U-Turn (Still significantly above ground)
+        const h_ns_straight = 46;   // North-South Straight
+        const h_ew_straight = 75;   // East-West Straight (clearly above NS)
+        const h_ne_sw_turn = 98;    // NorthEast / SouthWest Turns
+        const h_nw_se_turn = 125;    // NorthWest / SouthEast Turns
+        const h_ns_uturn = 170;      // Highest U-Turn (Very high!)
+
+        const flyoverWidth = 24; // Width of the flyover road surface
+        const rampStartZ = 1000; // How far back the ramps start
+        const flyoverLength = junctionRoadLength + rampStartZ;
+        const pillarSpacing = 199; // Distance between pillars along the curve
+        const guardrailHeight = 1.0;
+        const turnRadius = 95; // Radius for turning flyovers
+
+        // --- Junction Ground ---
+        const groundSize = 1200; // Adjusted ground size
+        const groundGeometry = new THREE.PlaneGeometry(groundSize, groundSize);
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial); // Use the basic material
+        ground.rotation.x = -Math.PI / 2;
+        // ground.receiveShadow = true; // Ground can receive shadows from pillars/flyovers
+        groundGroup.add(ground);
+
+        // --- Ground markings using lines (Unchanged) ---
+        const roadEdgePoints = []; const whiteLinePoints = []; const yellowLinePoints = []; const curbPoints = [];
+        function addGroundRoadSegment(axis, sign, length) { const y = 0.05; const startOffset = halfIntersection; const endOffset = startOffset + length; if (axis === 'z') { const z1 = sign * startOffset; const z2 = sign * endOffset; addLine(halfRoadWidth, y, z1, halfRoadWidth, y, z2, roadEdgePoints); addLine(-halfRoadWidth, y, z1, -halfRoadWidth, y, z2, roadEdgePoints); addLine(laneWidth, y, z1, laneWidth, y, z2, whiteLinePoints); addLine(-laneWidth, y, z1, -laneWidth, y, z2, whiteLinePoints); for (let i = 0; i < length; i += 8) { const dashStart = sign * (startOffset + i); const dashEnd = sign * (startOffset + i + 4); if (Math.abs(dashEnd) < Math.abs(endOffset)) { addLine(0, y, dashStart, 0, y, dashEnd, yellowLinePoints); } } addLine(-halfRoadWidth, y, z1 - sign*0.2, halfRoadWidth, y, z1 - sign*0.2, whiteLinePoints); const crossWalkZ = sign * (startOffset - 5); const crossWalkEndZ = crossWalkZ - sign * sidewalkWidth * 1.2; for(let i=-halfRoadWidth; i<=halfRoadWidth; i+= 1.5) { addLine(i, y, crossWalkZ, i, y, crossWalkEndZ, whiteLinePoints); } } else { const x1 = sign * startOffset; const x2 = sign * endOffset; addLine(x1, y, halfRoadWidth, x2, y, halfRoadWidth, roadEdgePoints); addLine(x1, y, -halfRoadWidth, x2, y, -halfRoadWidth, roadEdgePoints); addLine(x1, y, laneWidth, x2, y, laneWidth, whiteLinePoints); addLine(x1, y, -laneWidth, x2, y, -laneWidth, whiteLinePoints); for (let i = 0; i < length; i += 8) { const dashStart = sign * (startOffset + i); const dashEnd = sign * (startOffset + i + 4); if (Math.abs(dashEnd) < Math.abs(endOffset)) { addLine(dashStart, y, 0, dashEnd, y, 0, yellowLinePoints); } } addLine(x1 - sign*0.2, y, -halfRoadWidth, x1 - sign*0.2, y, halfRoadWidth, whiteLinePoints); const crossWalkX = sign * (startOffset - 5); const crossWalkEndX = crossWalkX - sign * sidewalkWidth * 1.2; for(let i=-halfRoadWidth; i<=halfRoadWidth; i+= 1.5) { addLine(crossWalkX, y, i, crossWalkEndX, y, i, whiteLinePoints); } } }
+        const ie = halfIntersection; const re = halfRoadWidth; const iy = 0.05; addLine(re, iy, ie, ie, iy, re, roadEdgePoints); addLine(-re, iy, ie, -ie, iy, re, roadEdgePoints); addLine(-re, iy, -ie, -ie, iy, -re, roadEdgePoints); addLine(re, iy, -ie, ie, iy, -re, roadEdgePoints); addLine(ie, iy, re, ie, iy, -re, roadEdgePoints); addLine(-ie, iy, re, -ie, iy, -re, roadEdgePoints); addLine(re, iy, ie, -re, iy, ie, roadEdgePoints); addLine(re, iy, -ie, -re, iy, -ie, roadEdgePoints);
+        addGroundRoadSegment('z', 1, junctionRoadLength); addGroundRoadSegment('z', -1, junctionRoadLength); addGroundRoadSegment('x', 1, junctionRoadLength); addGroundRoadSegment('x', -1, junctionRoadLength);
+        const curbY = 0.1; const segs = 10; function addCornerCurb(centerX, centerZ, radius, startAngle, endAngle, segments) { const y = curbY; const points = []; for (let i = 0; i <= segments; i++) { const angle = startAngle + (endAngle - startAngle) * (i / segments); points.push(new THREE.Vector3( centerX + radius * Math.cos(angle), y, centerZ + radius * Math.sin(angle) )); } for (let i = 0; i < points.length - 1; i++) { curbPoints.push(points[i], points[i + 1]); } }
+        const curbRad = halfRoadWidth + curbOffset; const sidewalkRad = curbRad + sidewalkWidth; addCornerCurb(halfIntersection, halfIntersection, curbRad, Math.PI * 1.0, Math.PI * 1.5, segs); addCornerCurb(-halfIntersection, halfIntersection, curbRad, Math.PI * 1.5, Math.PI * 2.0, segs); addCornerCurb(-halfIntersection, -halfIntersection, curbRad, Math.PI * 0.0, Math.PI * 0.5, segs); addCornerCurb(halfIntersection, -halfIntersection, curbRad, Math.PI * 0.5, Math.PI * 1.0, segs);
+        const roadEdgeGeometry = new THREE.BufferGeometry().setFromPoints(roadEdgePoints); const roadEdgeLines = new THREE.LineSegments(roadEdgeGeometry, roadEdgeMaterial); groundGroup.add(roadEdgeLines);
+        const whiteLineGeometry = new THREE.BufferGeometry().setFromPoints(whiteLinePoints); const whiteLines = new THREE.LineSegments(whiteLineGeometry, whiteLineMaterial); groundGroup.add(whiteLines);
+        const yellowLineGeometry = new THREE.BufferGeometry().setFromPoints(yellowLinePoints); const yellowLines = new THREE.LineSegments(yellowLineGeometry, yellowLineMaterial); groundGroup.add(yellowLines);
+        const curbGeometry = new THREE.BufferGeometry().setFromPoints(curbPoints); const curbLines = new THREE.LineSegments(curbGeometry, curbMaterial); groundGroup.add(curbLines);
+
+        // --- Flyover Creation ---
+
+        // *** MODIFIED Function to create solid flyover surfaces ***
+        function createFlyoverSurface(curve, segments, width, material, group) {
+            const points = curve.getPoints(segments);
+            const vertices = [];
+            const normals = [];
+            const uvs = [];
+            const indices = [];
+
+            const halfWidth = width / 2;
+
+            for (let i = 0; i < points.length; i++) {
+                const t = i / (points.length - 1); // Parameter along the curve
+                const p = points[i];
+                const tangent = curve.getTangentAt(t).normalize();
+                const normal = new THREE.Vector3(0, 1, 0); // Assuming flyover is mostly flat locally
+                const binormal = new THREE.Vector3().crossVectors(tangent, normal).normalize(); // Points sideways
+
+                const vLeft = p.clone().addScaledVector(binormal, -halfWidth);
+                const vRight = p.clone().addScaledVector(binormal, halfWidth);
+
+                vertices.push(vLeft.x, vLeft.y, vLeft.z);
+                vertices.push(vRight.x, vRight.y, vRight.z);
+
+                // Simple normals pointing up
+                normals.push(0, 1, 0);
+                normals.push(0, 1, 0);
+
+                // Basic UVs
+                uvs.push(0, t); // Left edge UV
+                uvs.push(1, t); // Right edge UV
+            }
+
+            // Create indices for triangles
+            for (let i = 0; i < points.length - 1; i++) {
+                const i0 = i * 2;     // Current left
+                const i1 = i0 + 1;    // Current right
+                const i2 = i0 + 2;    // Next left
+                const i3 = i0 + 3;    // Next right
+
+                indices.push(i0, i1, i2); // Triangle 1
+                indices.push(i1, i3, i2); // Triangle 2
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+            geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+            geometry.setIndex(indices);
+
+            const surface = new THREE.Mesh(geometry, material);
+            surface.castShadow = true;
+            surface.receiveShadow = true; // Flyover surface receives shadows
+            group.add(surface);
+
+            // Add lane markings on the surface (optional)
+            const centerLinePoints = [];
+            const dashLength = 5;
+            const gapLength = 5;
+            let distanceAlong = 0;
+            for (let i=0; i < points.length -1; i++) {
+                const p1 = points[i];
+                const p2 = points[i+1];
+                const segmentLength = p1.distanceTo(p2);
+                const numDashes = Math.floor(segmentLength / (dashLength + gapLength));
+
+                for (let j=0; j< numDashes; j++) {
+                     const startT = (distanceAlong + j * (dashLength+gapLength)) / curve.getLength();
+                     const endT = (distanceAlong + j * (dashLength+gapLength) + dashLength) / curve.getLength();
+                     if (endT <= 1.0) {
+                         centerLinePoints.push( curve.getPointAt(startT).add(new THREE.Vector3(0, 0.1, 0)) ); // Offset slightly above surface
+                         centerLinePoints.push( curve.getPointAt(endT).add(new THREE.Vector3(0, 0.1, 0)) );
+                     }
+                }
+                 distanceAlong += segmentLength;
+
+            }
+             if (centerLinePoints.length > 0) {
+                 const centerLineGeom = new THREE.BufferGeometry().setFromPoints(centerLinePoints);
+                 const centerLine = new THREE.LineSegments(centerLineGeom, whiteLineMaterial);
+                 group.add(centerLine);
+             }
+
+
+            // Add guardrails and pillars
+            addGuardrails(points, width, guardrailHeight, group);
+            addPillarsAlongCurve(points, width, pillarGroup); // Add pillars to the dedicated pillarGroup
+
+            return curve; // Return the original curve for bus pathing
+        }
+
+
+        function addGuardrails(points, width, railHeight, group) {
+            const railPoints = [];
+            const railOffset = width / 2 + 0.2; // Place guardrails slightly outside the road width
+            const postSpacing = 5; // How many curve points between posts
+
+            for (let side = -1; side <= 1; side += 2) {
+                const currentSidePoints = [];
+                // Generate rail path points
+                for (let i = 0; i < points.length; i++) {
+                    const p = points[i];
+                    const tangent = (i < points.length - 1)
+                        ? points[i+1].clone().sub(p)
+                        : p.clone().sub(points[i-1]);
+                    tangent.normalize();
+                    const normal = new THREE.Vector3(0, 1, 0);
+                    const binormal = new THREE.Vector3().crossVectors(tangent, normal).normalize();
+
+                    const railBase = p.clone().addScaledVector(binormal, side * railOffset);
+                    currentSidePoints.push(railBase);
+                }
+
+                // Add line segments for top and bottom rails
+                 for (let i = 0; i < currentSidePoints.length - 1; i++) {
+                    const p1Base = currentSidePoints[i];
+                    const p2Base = currentSidePoints[i+1];
+                    const p1Top = p1Base.clone().add(new THREE.Vector3(0, railHeight, 0));
+                    const p2Top = p2Base.clone().add(new THREE.Vector3(0, railHeight, 0));
+
+                    railPoints.push(p1Base, p2Base); // Bottom rail segment
+                    railPoints.push(p1Top, p2Top);   // Top rail segment
+
+                    // Add vertical posts periodically
+                    if (i % postSpacing === 0) {
+                         railPoints.push(p1Base, p1Top);
+                    }
+                 }
+                 // Add last post
+                 if (currentSidePoints.length > 0) {
+                     const lastBase = currentSidePoints[currentSidePoints.length - 1];
+                     const lastTop = lastBase.clone().add(new THREE.Vector3(0, railHeight, 0));
+                      if ((currentSidePoints.length - 1) % postSpacing === 0) {
+                          railPoints.push(lastBase, lastTop);
+                      }
+                 }
+            }
+            if (railPoints.length > 0) {
+                const railGeometry = new THREE.BufferGeometry().setFromPoints(railPoints);
+                const railObj = new THREE.LineSegments(railGeometry, detailLineMaterial); // Use a lighter material
+                group.add(railObj);
+            }
+        }
+
+
+        function addPillarsAlongCurve(points, width, pillarGroupRef) {
+             let distanceSpaced = 0;
+            const basePillarY = 0.1; // Start pillars slightly above ground plane y=0
+
+            for (let i = 1; i < points.length; i++) {
+                 const p0 = points[i-1];
+                 const p1 = points[i];
+                 distanceSpaced += p0.distanceTo(p1);
+
+                 if (distanceSpaced >= pillarSpacing) {
+                     const point = p1; // Place pillar at the end of the segment
+                     const pillarHeight = point.y - basePillarY; // Height from basePillarY to flyover point
+
+                     if (pillarHeight > 1.0) { // Only add pillars if flyover is sufficiently high
+                        // Place pillars slightly offset from center using binormal
+                        const tangent = p1.clone().sub(p0).normalize();
+                        const normal = new THREE.Vector3(0, 1, 0);
+                        const binormal = new THREE.Vector3().crossVectors(tangent, normal).normalize();
+                        const pillarOffset = width * 0.3; // Offset pillars slightly inward
+
+                        createPillar(point.x + binormal.x * pillarOffset, basePillarY, point.z + binormal.z * pillarOffset, pillarHeight, pillarGroupRef);
+                        createPillar(point.x - binormal.x * pillarOffset, basePillarY, point.z - binormal.z * pillarOffset, pillarHeight, pillarGroupRef);
+                    }
+                    distanceSpaced = 0; // Reset spacing counter
+                 }
+            }
+        }
+
+        // Define entry/exit points (adjusted for new heights)
+        const entryOffset = 30;
+        const northEntry = new THREE.Vector3(0, 0.1, -rampStartZ); // Start ramps slightly above ground
+        const southEntry = new THREE.Vector3(0, 0.1, rampStartZ);
+        const eastEntry = new THREE.Vector3(rampStartZ, 0.1, 0);
+        const westEntry = new THREE.Vector3(-rampStartZ, 0.1, 0);
+
+        // Adjusted turn entry/exit points
+        const turnRampFactor = 0.7; // Make turn ramps slightly shorter
+        const northEntryE_Turn = new THREE.Vector3(entryOffset, 0.1, -rampStartZ * turnRampFactor);
+        const northEntryW_Turn = new THREE.Vector3(-entryOffset, 0.1, -rampStartZ * turnRampFactor);
+        const southEntryE_Turn = new THREE.Vector3(entryOffset, 0.1, rampStartZ * turnRampFactor);
+        const southEntryW_Turn = new THREE.Vector3(-entryOffset, 0.1, rampStartZ * turnRampFactor);
+        const eastEntryN_Turn = new THREE.Vector3(rampStartZ * turnRampFactor, 0.1, -entryOffset);
+        const eastEntryS_Turn = new THREE.Vector3(rampStartZ * turnRampFactor, 0.1, entryOffset);
+        const westEntryN_Turn = new THREE.Vector3(-rampStartZ * turnRampFactor, 0.1, -entryOffset);
+        const westEntryS_Turn = new THREE.Vector3(-rampStartZ * turnRampFactor, 0.1, entryOffset);
+
+        // U-Turn entry/exit points (further out)
+        const uTurnOffset = entryOffset * 1.5;
+        const uTurnRampFactor = 0.9;
+        const northUTurnEntry = new THREE.Vector3(-uTurnOffset, 0.1, -rampStartZ * uTurnRampFactor);
+        const southUTurnEntry = new THREE.Vector3(uTurnOffset, 0.1, rampStartZ * uTurnRampFactor);
+        const eastUTurnEntry = new THREE.Vector3(rampStartZ * uTurnRampFactor, 0.1, uTurnOffset);
+        const westUTurnEntry = new THREE.Vector3(-rampStartZ * uTurnRampFactor, 0.1, -uTurnOffset);
+
+
+        // --- Generate Flyover Paths with NEW HEIGHTS and Solid Surfaces ---
+        const curveSegments = 150; // More segments for smoother solid roads
+
+        // 1. NS Straight (Height: h_ns_straight = 30)
+        const nsCurve = generateBezierCurve([
+            northEntry,
+            new THREE.Vector3(0, h_ns_straight * 0.6, -rampStartZ * 0.4), // Control points adjusted for height
+            new THREE.Vector3(0, h_ns_straight, 0),                       // Peak height
+            new THREE.Vector3(0, h_ns_straight * 0.6, rampStartZ * 0.4),
+            southEntry
+        ]);
+        const nsFlyoverPath = createFlyoverSurface(nsCurve, curveSegments, flyoverWidth, flyoverRoadMaterial, nsFlyoverGroup);
+
+        // 2. EW Straight (Height: h_ew_straight = 45)
+        const ewCurve = generateBezierCurve([
+            westEntry,
+            new THREE.Vector3(-rampStartZ * 0.4, h_ew_straight * 0.6, 0),
+            new THREE.Vector3(0, h_ew_straight, 0),                     // Peak height
+            new THREE.Vector3(rampStartZ * 0.4, h_ew_straight * 0.6, 0),
+            eastEntry
+        ]);
+        const ewFlyoverPath = createFlyoverSurface(ewCurve, curveSegments, flyoverWidth, flyoverRoadMaterial, ewFlyoverGroup);
+
+        // 3. NE Turn (Height: h_ne_sw_turn = 60)
+        const neCurve = generateBezierCurve([
+            northEntryE_Turn,
+            new THREE.Vector3(northEntryE_Turn.x, h_ne_sw_turn * 0.4, -rampStartZ * 0.3), // Intermediate control points
+            new THREE.Vector3(turnRadius * 0.7, h_ne_sw_turn, -turnRadius * 0.7),      // Mid-turn point at height
+            new THREE.Vector3(rampStartZ * 0.3, h_ne_sw_turn * 0.4, eastEntryN_Turn.z),
+            eastEntryN_Turn
+        ]);
+        const neFlyoverPath = createFlyoverSurface(neCurve, curveSegments, flyoverWidth, flyoverRoadMaterial, neFlyoverGroup);
+
+        // 4. SW Turn (Height: h_ne_sw_turn = 60) - Mirror of NE
+         const swCurve = generateBezierCurve([
+            southEntryW_Turn,
+            new THREE.Vector3(southEntryW_Turn.x, h_ne_sw_turn * 0.4, rampStartZ * 0.3),
+            new THREE.Vector3(-turnRadius * 0.7, h_ne_sw_turn, turnRadius * 0.7),
+            new THREE.Vector3(-rampStartZ * 0.3, h_ne_sw_turn * 0.4, westEntryS_Turn.z),
+            westEntryS_Turn
+        ]);
+        const swFlyoverPath = createFlyoverSurface(swCurve, curveSegments, flyoverWidth, flyoverRoadMaterial, swFlyoverGroup);
+
+        // 5. NW Turn (Height: h_nw_se_turn = 75)
+        const nwCurve = generateBezierCurve([
+            northEntryW_Turn,
+            new THREE.Vector3(northEntryW_Turn.x, h_nw_se_turn * 0.4, -rampStartZ * 0.3),
+            new THREE.Vector3(-turnRadius * 0.7, h_nw_se_turn, -turnRadius * 0.7), // Different height
+            new THREE.Vector3(-rampStartZ * 0.3, h_nw_se_turn * 0.4, westEntryN_Turn.z),
+            westEntryN_Turn
+        ]);
+        const nwFlyoverPath = createFlyoverSurface(nwCurve, curveSegments, flyoverWidth, flyoverRoadMaterial, nwFlyoverGroup);
+
+        // 6. SE Turn (Height: h_nw_se_turn = 75) - Mirror of NW
+        const seCurve = generateBezierCurve([
+            southEntryE_Turn,
+            new THREE.Vector3(southEntryE_Turn.x, h_nw_se_turn * 0.4, rampStartZ * 0.3),
+            new THREE.Vector3(turnRadius * 0.7, h_nw_se_turn, turnRadius * 0.7),
+            new THREE.Vector3(rampStartZ * 0.3, h_nw_se_turn * 0.4, eastEntryS_Turn.z),
+            eastEntryS_Turn
+        ]);
+        const seFlyoverPath = createFlyoverSurface(seCurve, curveSegments, flyoverWidth, flyoverRoadMaterial, seFlyoverGroup);
+
+        // 7. NS U-Turn (Height: h_ns_uturn = 90) - Highest
+        const nsUTurnCurve = generateBezierCurve([
+            northUTurnEntry, // Start from North, going South initially
+            new THREE.Vector3(northUTurnEntry.x - 80, h_ns_uturn * 0.5, -rampStartZ * 0.4), // Wider control point
+            new THREE.Vector3(-turnRadius * 1.4, h_ns_uturn, 0), // Apex of U-turn (wider radius)
+            new THREE.Vector3(southUTurnEntry.x + 80, h_ns_uturn * 0.5, rampStartZ * 0.4),
+            southUTurnEntry // End going North
+        ]);
+        const nsUTurnPath = createFlyoverSurface(nsUTurnCurve, curveSegments + 20, flyoverWidth, flyoverRoadMaterial, nsUTurnGroup); // More segments for U-turn
+
+        // 8. EW U-Turn (Height: h_ew_uturn = 15) - Lowest elevated
+        const ewUTurnCurve = generateBezierCurve([
+            eastUTurnEntry, // Start from East, going West initially
+            new THREE.Vector3(rampStartZ * 0.4, h_ew_uturn * 0.5, eastUTurnEntry.z + 80),
+            new THREE.Vector3(0, h_ew_uturn, turnRadius * 1.4), // Apex of U-turn
+            new THREE.Vector3(-rampStartZ * 0.4, h_ew_uturn * 0.5, westUTurnEntry.z - 80),
+            westUTurnEntry // End going East
+        ]);
+        const ewUTurnPath = createFlyoverSurface(ewUTurnCurve, curveSegments + 20, flyoverWidth, flyoverRoadMaterial, ewUTurnGroup);
+
+
+        // --- Traffic Lights (Unchanged) ---
+        const trafficLights = [];
+        function createTrafficLight(x, z, rotationY) { const lightGroup = new THREE.Group(); lightGroup.position.set(x, 0, z); lightGroup.rotation.y = rotationY; const poleHeight = 6; const armLength = 8; const lightBoxSize = new THREE.Vector3(0.6, 1.8, 0.6); const lightRadius = 0.25; const poleGeo = new THREE.CylinderGeometry(0.2, 0.25, poleHeight, 8); const pole = new THREE.Mesh(poleGeo, poleMaterial); pole.position.y = poleHeight / 2; pole.castShadow = true; lightGroup.add(pole); const armGeo = new THREE.CylinderGeometry(0.15, 0.15, armLength, 8); const arm = new THREE.Mesh(armGeo, poleMaterial); arm.rotation.z = Math.PI / 2; arm.position.set(armLength / 2, poleHeight - 0.2, 0); arm.castShadow = true; lightGroup.add(arm); const box = new THREE.Mesh(new THREE.BoxGeometry(lightBoxSize.x, lightBoxSize.y, lightBoxSize.z), lightBoxMaterial); box.position.set(armLength - lightBoxSize.x*1.5, poleHeight - lightBoxSize.y / 2 - 0.3, 0); box.castShadow = true; lightGroup.add(box); const lightGeo = new THREE.SphereGeometry(lightRadius, 16, 8); const redLight = new THREE.Mesh(lightGeo, lightOffMaterial.clone()); redLight.position.set(box.position.x, box.position.y + lightBoxSize.y/2 - 0.4, box.position.z + lightBoxSize.z / 2 + 0.01); redLight.castShadow = true; const yellowLight = new THREE.Mesh(lightGeo, lightOffMaterial.clone()); yellowLight.position.set(redLight.position.x, redLight.position.y - 0.5, redLight.position.z); yellowLight.castShadow = true; const greenLight = new THREE.Mesh(lightGeo, lightOffMaterial.clone()); greenLight.position.set(redLight.position.x, redLight.position.y - 1.0, redLight.position.z); greenLight.castShadow = true; lightGroup.add(redLight, yellowLight, greenLight); groundGroup.add(lightGroup); return { group: lightGroup, red: redLight, yellow: yellowLight, green: greenLight }; }
+        const lightPosOffset = halfIntersection + laneWidth;
+        trafficLights.push(createTrafficLight(halfRoadWidth + curbOffset + sidewalkWidth, -lightPosOffset, 0));
+        trafficLights.push(createTrafficLight(-(halfRoadWidth + curbOffset + sidewalkWidth), lightPosOffset, Math.PI));
+        trafficLights.push(createTrafficLight(lightPosOffset, halfRoadWidth + curbOffset + sidewalkWidth, -Math.PI / 2));
+        trafficLights.push(createTrafficLight(-lightPosOffset, -(halfRoadWidth + curbOffset + sidewalkWidth), Math.PI / 2));
+
+        // --- Junction Buses ---
+        function createJunctionBus(colorIndex) {
+            const busCopy = busGroup.clone(true); // Clone the original bus group
+             busCopy.scale.set(4, 4, 4); // *** Use a smaller scale for junction buses ***
+
+             // Traverse and apply the specified color to the main lines
+             const targetMaterial = busColorMaterials[colorIndex % busColorMaterials.length];
+             busCopy.traverse(child => {
+                 // Change main line color
+                 if (child.isLineSegments && child.material === lineMaterial) {
+                     child.material = targetMaterial;
+                 }
+                 // Optionally change detail line color (can keep original or match main)
+                 // if (child.isLineSegments && child.material === detailLineMaterial) {
+                 //    child.material = new THREE.LineBasicMaterial({ color: targetMaterial.color.clone().multiplyScalar(0.8) }); // Slightly darker detail
+                 // }
+
+                 // Optionally change wheel color
+                 // if (child.isMesh && child.material === wheelMaterial) {
+                 //     child.material = new THREE.MeshBasicMaterial({ color: 0x333333, wireframe: true }); // Darker wheels
+                 // }
+
+                 // Remove internal components if desired for performance (robotic arms, food, steam)
+                 if (child === leftRoboticArm || child === rightRoboticArm || child === foodItemsGroup || child === steamParticles || child === cookingSurfaceGroup) {
+                    // child.visible = false; // Or remove completely: busCopy.remove(child);
+                 }
+
+                 // Ensure cloned meshes also cast shadows if needed
+                 if (child.isMesh) {
+                     child.castShadow = true;
+                     // child.receiveShadow = true; // Bus surface could receive shadow
+                 }
+             });
+            busCopy.rotation.set(0, 0, 0); // Reset rotation
+            return busCopy;
+        }
+
+        function createBusesForPath(path, count, colorIndex = 0, baseSpeed = 0.00005) {
+            const pathLength = path.getLength(); // Get path length for speed scaling later if needed
+            for (let i = 0; i < count; i++) {
+                const bus = createJunctionBus(colorIndex); // Pass color index
+
+                const progress = Math.random(); // Start buses at random points
+                const speed = baseSpeed + Math.random() * baseSpeed * 0.08; // Add some speed variation
+
+                bus.userData = {
+                    path: path,
+                    speed: speed,
+                    progress: progress,
+                    // No cooking surface needed for simplified junction buses
+                };
+
+                const position = path.getPointAt(progress);
+                const tangent = path.getTangentAt(progress); // Normalized tangent vector
+
+                // *** Offset bus slightly above the flyover surface ***
+                 const surfaceOffset = 0.3; // Adjust as needed based on bus model base
+                 position.y += surfaceOffset;
+
+                bus.position.copy(position);
+
+                // Orient bus along the path tangent
+                const lookAtPos = position.clone().add(tangent); // Point slightly ahead
+                bus.lookAt(lookAtPos);
+                // Adjust lookAt rotation if necessary (often needs +PI/2 or -PI/2 depending on model orientation)
+                 // IMPORTANT: Adjust this angle if your bus model faces a different direction by default
+                bus.rotation.y += Math.PI / 2; // Assuming bus model's front is along its local +X axis
+
+                junctionBusGroup.add(bus);
+            }
+        }
+
+        // Add buses to paths (use appropriate colors)
+        createBusesForPath(nsFlyoverPath, 1, 1, 0.0015); // NS Straight (Orange)
+        // createBusesForPath(ewFlyoverPath, 3, 2, 0.0005); // EW Straight (Green)
+        createBusesForPath(neFlyoverPath, 1, 1, 0.0008); // NE Turn (Orange)
+        createBusesForPath(swFlyoverPath, 1, 1, 0.0008); // SW Turn (Orange)
+        createBusesForPath(nwFlyoverPath, 1, 1, 0.0007); // NW Turn (Green)
+        createBusesForPath(seFlyoverPath, 1, 1, 0.0007); // SE Turn (Green)
+        createBusesForPath(nsUTurnPath, 1, 1, 0.0004);   // NS U-Turn (Yellow)
+        createBusesForPath(ewUTurnPath, 1, 1, 0.0009);   // EW U-Turn (Pink)
+
+        // Add some ground-level buses (use distinct colors)
+        const groundBusY = 0.5; // Y position for ground buses (low enough to be under flyovers)
+        const groundPathNS = new THREE.LineCurve3( new THREE.Vector3(laneWidth, groundBusY, -junctionRoadLength * 0.8), new THREE.Vector3(laneWidth, groundBusY, junctionRoadLength * 0.8) );
+        const groundPathSN = new THREE.LineCurve3( new THREE.Vector3(-laneWidth, groundBusY, junctionRoadLength * 0.8), new THREE.Vector3(-laneWidth, groundBusY, -junctionRoadLength * 0.8) );
+        const groundPathEW = new THREE.LineCurve3( new THREE.Vector3(-junctionRoadLength * 0.8, groundBusY, -laneWidth), new THREE.Vector3(junctionRoadLength * 0.8, groundBusY, -laneWidth) );
+        const groundPathWE = new THREE.LineCurve3( new THREE.Vector3(junctionRoadLength * 0.8, groundBusY, laneWidth), new THREE.Vector3(-junctionRoadLength * 0.8, groundBusY, laneWidth) );
+
+        createBusesForPath(groundPathNS, 1, 0, 0.0015); // Cyan
+        createBusesForPath(groundPathSN, 1, 0, 0.0016); // Cyan
+        createBusesForPath(groundPathEW, 1, 0, 0.0014); // Blue (original)
+        createBusesForPath(groundPathWE, 1, 0, 0.0015); // Blue (original)
+        junctionGroup.add(junctionBusGroup); // Add the group containing all junction buses
+
+
+        // --- Lighting (Adjusted) ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.9); // Increased ambient slightly
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5); // Increased directional intensity significantly
+        directionalLight.position.set(50, 150, 70); // Higher and further light source for large structure
+        directionalLight.castShadow = true;
+        directionalLight.shadow.mapSize.width = 2048; // Increase shadow map resolution
+        directionalLight.shadow.mapSize.height = 2048;
+        directionalLight.shadow.camera.near = 10;    // Adjust shadow camera frustum
+        directionalLight.shadow.camera.far = 500;
+        directionalLight.shadow.camera.left = -250;
+        directionalLight.shadow.camera.right = 250;
+        directionalLight.shadow.camera.top = 250;
+        directionalLight.shadow.camera.bottom = -250;
+        directionalLight.shadow.bias = -0.001; // Adjust shadow bias if needed (prevents shadow acne)
+        scene.add(directionalLight);
+        // const shadowCamHelper = new THREE.CameraHelper(directionalLight.shadow.camera); // Optional: Visualize shadow frustum
+        // scene.add(shadowCamHelper);
+
+        // Optional: Hemisphere light for softer overall lighting
+        const hemiLight = new THREE.HemisphereLight( 0xffffbb, 0x483d8b, 0.5 ); // Sky color, Ground color (background), Intensity
+        scene.add( hemiLight );
+
+        // --- Resize Handler ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        });
+
+        let lastScrollY = 0;
+let isAtBottom = false;
+let isScrollingUp = false;
+
+// Replace the existing scroll event listener with this one
+window.addEventListener('scroll', () => {
+    // Detect scroll direction
+    isScrollingUp = window.scrollY < lastScrollY;
+    
+    // Store current scroll position for next comparison
+    lastScrollY = window.scrollY;
+    
+    // Update animation parameters
+    scrollAnimationParams.currentScrollY = window.scrollY;
+    
+    // Calculate if we're at the bottom of the page
+    const maxScroll = document.body.scrollHeight - window.innerHeight;
+    const scrollProgress = maxScroll > 0 ? Math.min(Math.max(scrollAnimationParams.currentScrollY / maxScroll, 0), 1) : 0;
+    
+    // Check if we're at the bottom (or very close)
+    const bottomThreshold = 0.95;
+    const wasAtBottom = isAtBottom;
+    isAtBottom = scrollProgress >= bottomThreshold;
+    
+    // If we were at the bottom and now scrolling up, force manual camera reset
+    if (wasAtBottom && isScrollingUp) {
+        console.log("Scrolling up from bottom - resetting camera");
+        
+        // Force exit full mouse control mode
+        isFullMouseControlActive = false;
+        controls.enableZoom = false;
+        controls.enablePan = false;
+        
+        // Reset camera to a known good position
+        camera.position.copy(initialCameraPosition);
+        controls.target.copy(initialCameraTarget);
+        controls.update();
+        
+        // Update UI
+        infoElement.textContent = "Scrolling back up from bottom";
+        scrollInfoElement.textContent = "Scroll to animate, drag to look";
+    }
+});
+
+
+
+        // --- Animation Functions ---
+        // Animate Main Bus components (Food, Steam, Arms) - Unchanged
+        function animateFood(time) { foodItemsGroup.children.forEach((food, index) => { const yBase = cookingSurfaceY + 0.02; if (index === 0) { food.position.y = yBase + Math.max(0, Math.sin(time * 1.5 * 2)) * 0.1; food.rotation.z += Math.max(0, Math.sin(time * 1.5 * 2)) * 0.1; } else { food.position.x = cookingSurfaceX + 0.3 + Math.sin(time * 2.5 + index) * 0.02; food.position.z = Math.cos(time * 2.5 + index) * 0.02; } }); }
+        function animateSteam(time) { steamParticles.children.forEach(particle => { particle.position.y += particle.userData.speed; particle.position.x += Math.sin(time * 2 + particle.userData.offset) * 0.002; particle.position.z += Math.cos(time * 2 + particle.userData.offset) * 0.002; const life = (particle.position.y - particle.userData.originalY) / 0.8; particle.material.opacity = Math.max(0, 0.6 * (1 - life)); if (life > 1) { const radius = 0.4 * Math.sqrt(Math.random()); const angle = Math.random() * Math.PI * 2; particle.position.set( cookingSurfaceX + radius * Math.cos(angle), cookingSurfaceY + 0.05 + Math.random() * 0.1, radius * Math.sin(angle) ); particle.userData.originalY = particle.position.y; particle.material.opacity = 0.6; } }); }
+        const robotArmParams = { leftArm: { platformRotation: { min: -Math.PI/4, max: Math.PI/4 }, upperArmRotation: { min: -Math.PI/6, max: Math.PI/6 }, forearmRotation: { min: -Math.PI, max: -Math.PI/2 - Math.PI/4 }, handRotation: { min: -Math.PI/4, max: Math.PI/4 }, phases: { platform: 0, upperArm: 2, forearm: 4, hand: 6 } }, rightArm: { platformRotation: { min: -Math.PI/4, max: Math.PI/4 }, upperArmRotation: { min: -Math.PI/6, max: Math.PI/6 }, forearmRotation: { min: -Math.PI, max: -Math.PI/2 - Math.PI/4 }, handRotation: { min: -Math.PI/4, max: Math.PI/4 }, phases: { platform: 1, upperArm: 3, forearm: 5, hand: 7 } }, speed: 2.5 };
+        function animateRoboticArms(time) { leftRoboticArm.userData.platform.rotation.y = oscillate(time, robotArmParams.leftArm.platformRotation.min, robotArmParams.leftArm.platformRotation.max, robotArmParams.leftArm.phases.platform, robotArmParams.speed); leftRoboticArm.userData.upperArm.rotation.x = oscillate(time, robotArmParams.leftArm.upperArmRotation.min, robotArmParams.leftArm.upperArmRotation.max, robotArmParams.leftArm.phases.upperArm, robotArmParams.speed); leftRoboticArm.userData.forearm.rotation.x = oscillate(time, robotArmParams.leftArm.forearmRotation.min, robotArmParams.leftArm.forearmRotation.max, robotArmParams.leftArm.phases.forearm, robotArmParams.speed); leftRoboticArm.userData.hand.rotation.z = oscillate(time, robotArmParams.leftArm.handRotation.min, robotArmParams.leftArm.handRotation.max, robotArmParams.leftArm.phases.hand, robotArmParams.speed); rightRoboticArm.userData.platform.rotation.y = oscillate(time, robotArmParams.rightArm.platformRotation.min, robotArmParams.rightArm.platformRotation.max, robotArmParams.rightArm.phases.platform, robotArmParams.speed); rightRoboticArm.userData.upperArm.rotation.x = oscillate(time, robotArmParams.rightArm.upperArmRotation.min, robotArmParams.rightArm.upperArmRotation.max, robotArmParams.rightArm.phases.upperArm, robotArmParams.speed); rightRoboticArm.userData.forearm.rotation.x = oscillate(time, robotArmParams.rightArm.forearmRotation.min, robotArmParams.rightArm.forearmRotation.max, robotArmParams.rightArm.phases.forearm, robotArmParams.speed); rightRoboticArm.userData.hand.rotation.z = oscillate(time, robotArmParams.rightArm.handRotation.min, robotArmParams.rightArm.handRotation.max, robotArmParams.rightArm.phases.hand, robotArmParams.speed); }
+        function oscillate(time, min, max, phaseOffset, speed) { const center = (max + min) / 2; const amplitude = (max - min) / 2; return center + amplitude * Math.sin(time * speed + phaseOffset); }
+
+        // NEW: Animate Main Bus (Moving Bus, Static Oval Road)
+        const busState = { moving: true, progress: 0, speed: 0.0005, startTime: null };
+        function animateBusAndRoad(time) {
+            if (busState.startTime === null) {
+                busState.startTime = time;
+            }
+            
+            if (busState.moving) {
+                // Update the bus position along the oval track
+                busState.progress += busState.speed;
+                if (busState.progress > 1) busState.progress %= 1;
+                
+                // Get the position and orientation on the track
+                const position = trackCurve.getPointAt(busState.progress);
+                const tangent = trackCurve.getTangentAt(busState.progress).normalize();
+                
+                // Adjust position height for the road surface
+                position.y += floorY * 1.5;
+                
+                // Apply position to bus
+                busGroup.position.copy(position);
+                
+                // Orient bus along track
+                const lookAtPoint = position.clone().add(tangent);
+                busGroup.lookAt(lookAtPoint);
+                busGroup.rotation.y += Math.PI / 2; // Adjust based on bus model orientation
+                
+                // Rotate wheels based on movement
+                const wheelRotationSpeed = 0.1; // Adjust speed
+                busGroup.traverse(child => {
+                    if (child.isMesh && (child.geometry.type === 'TorusGeometry' || child.geometry.type === 'CircleGeometry')) {
+                        child.rotation.z -= wheelRotationSpeed;
+                    }
+                });
+            }
+        }
+
+        // Animate Junction Buses (Moving Buses) - Adjusted for new orientation/positioning
+        const tempBusPos = new THREE.Vector3();
+        const tempBusLookAt = new THREE.Vector3();
+        function animateJunctionBuses(deltaTime, time) {
+            const surfaceOffset = 0.3; // Same offset as used in creation
+            const wheelRotationSpeed = 0.25; // Adjust wheel speed as needed
+
+            junctionBusGroup.children.forEach(bus => {
+                if (!bus.userData || !bus.userData.path) return;
+
+                // Update progress
+                bus.userData.progress += bus.userData.speed; // Speed is per frame/update here
+                if (bus.userData.progress >= 1.0) {
+                    bus.userData.progress %= 1.0; // Wrap progress
+                } else if (bus.userData.progress < 0) {
+                    bus.userData.progress = 1.0 + (bus.userData.progress % 1.0); // Handle negative wrap if speed reversed
+                }
+
+                // Get new position and tangent from the curve
+                const path = bus.userData.path;
+                path.getPointAt(bus.userData.progress, tempBusPos);
+                const tangent = path.getTangentAt(bus.userData.progress); // Normalized tangent
+
+                // Apply surface offset
+                tempBusPos.y += surfaceOffset;
+
+                // Update bus position
+                bus.position.copy(tempBusPos);
+
+                // Update bus orientation
+                tempBusLookAt.copy(tempBusPos).add(tangent); // Look slightly ahead along the tangent
+                bus.lookAt(tempBusLookAt);
+                bus.rotation.y += Math.PI / 2; // Re-apply orientation correction
+
+                // Animate wheels on junction buses
+                 bus.traverse(child => {
+                    if (child.isMesh && child.geometry && (child.geometry.type === 'TorusGeometry' || child.geometry.type === 'CircleGeometry')) {
+                        child.rotation.z -= wheelRotationSpeed; // Rotate forward
+                    }
+                 });
+            });
+        }
+
+        // Animate Traffic Lights (Unchanged)
+        function animateTrafficLights(deltaTime) { const time = Date.now() / 1000; const cycleDuration = 15; const greenTime = 0.4; const yellowTime = 0.1; const cycleProgress = (time % cycleDuration) / cycleDuration; const nsGreenStart = 0; const nsYellowStart = nsGreenStart + greenTime; const nsRedStart = nsYellowStart + yellowTime; const ewGreenStart = nsRedStart; const ewYellowStart = ewGreenStart + greenTime; const ewRedStart = ewYellowStart + yellowTime; trafficLights.forEach((light, index) => { light.red.material = lightOffMaterial; light.yellow.material = lightOffMaterial; light.green.material = lightOffMaterial; let currentGreenStart, currentYellowStart, currentRedStart; if (index === 0 || index === 1) { currentGreenStart = nsGreenStart; currentYellowStart = nsYellowStart; currentRedStart = nsRedStart; } else { currentGreenStart = ewGreenStart; currentYellowStart = ewYellowStart; currentRedStart = ewRedStart; } if (cycleProgress >= currentGreenStart && cycleProgress < currentYellowStart) { light.green.material = greenLightMaterial; } else if (cycleProgress >= currentYellowStart && cycleProgress < currentRedStart) { light.yellow.material = yellowLightMaterial; } else { const isInRedBeforeWrap = currentGreenStart > currentRedStart && cycleProgress < currentGreenStart && cycleProgress >= currentRedStart - 1.0; const isInRedAfterStart = cycleProgress >= currentRedStart; if (isInRedAfterStart || isInRedBeforeWrap) { light.red.material = redLightMaterial; } else { if (index === 0 || index === 1) { if(cycleProgress >= ewGreenStart) light.red.material = redLightMaterial; } else { if(cycleProgress < ewGreenStart) light.red.material = redLightMaterial; } } } }); }
+
+
+        // --- Camera Update Logic (Unchanged logic, targets might shift due to scene scale) ---
+        const tempTarget = new THREE.Vector3();
+        const vec3Lerp = (v1, v2, t, out) => out.copy(v1).lerp(v2, t); // Helper
+   
+    
+        function updateCameraAndControls(time) {
+    const maxScroll = document.body.scrollHeight - window.innerHeight;
+    const scrollProgress = maxScroll > 0 ? Math.min(Math.max(scrollAnimationParams.currentScrollY / maxScroll, 0), 1) : 0;
+    const activationThreshold = 0.98;
+    
+    // Store previous scroll progress to detect direction
+    const prevScrollProgress = scrollAnimationParams.prevScrollProgress || scrollProgress;
+    const isScrollingUp = scrollProgress < prevScrollProgress;
+    
+    // Save current scroll progress for next frame
+    scrollAnimationParams.prevScrollProgress = scrollProgress;
+
+    // Always get the current bus position
+    const currentBusPosition = busGroup.position.clone();
+    
+    // Default target is the current bus position
+    let targetLookAt = currentBusPosition.clone();
+    let targetDistance = scrollAnimationParams.scrollPages.straightRoad.dist;
+    let lerpFactor = 0.08;
+    let currentPage = 'straightRoad';
+    let showBus = true;
+    let showRoad = true;
+    let showJunction = false;
+
+    // Minimum Y-coordinate to prevent looking below road level
+    const minimumTargetY = 10;
+
+    // If user has scrolled to the bottom and is now scrolling back up,
+    // ensure we reset to proper animation state
+    if (isScrollingUp && scrollProgress < activationThreshold) {
+        // Disable full mouse control when scrolling back up
+        if (isFullMouseControlActive) {
+            isFullMouseControlActive = false;
+            controls.enableZoom = false;
+            controls.enablePan = false;
+            infoElement.textContent = "Scrolling back up through animation";
+            scrollInfoElement.textContent = "Scroll to animate, drag to look";
+        }
+    }
+
+    if (!isFullMouseControlActive) {
+        // Normal scroll animation path
+        if (scrollProgress <= scrollAnimationParams.scrollPages.straightRoad.end) {
+            targetLookAt = currentBusPosition.clone();
+            targetLookAt.y = Math.max(targetLookAt.y, minimumTargetY);
+            targetDistance = scrollAnimationParams.scrollPages.straightRoad.dist;
+            currentPage = 'straightRoad';
+            
+        } else if (scrollProgress <= scrollAnimationParams.scrollPages.zoomToBus.end) {
+            targetLookAt = currentBusPosition.clone();
+            targetLookAt.y = Math.max(targetLookAt.y, minimumTargetY);
+            
+            const t = normalize(scrollProgress, scrollAnimationParams.scrollPages.zoomToBus.start, scrollAnimationParams.scrollPages.zoomToBus.end);
+            targetDistance = lerp(scrollAnimationParams.scrollPages.straightRoad.dist, scrollAnimationParams.scrollPages.zoomToBus.dist, t);
+            currentPage = 'zoomToBus';
+            
+        } else if (scrollProgress <= scrollAnimationParams.scrollPages.zoomToFunction.end) {
+            const t = normalize(scrollProgress, scrollAnimationParams.scrollPages.zoomToFunction.start, scrollAnimationParams.scrollPages.zoomToFunction.end);
+            
+            const cookingSurfaceRelative = new THREE.Vector3(
+                currentBusPosition.x + (cookingSurfaceX * busGroup.scale.x), 
+                Math.max(currentBusPosition.y + ((cookingSurfaceY + 0.5) * busGroup.scale.y), minimumTargetY),
+                currentBusPosition.z
+            );
+            
+            vec3Lerp(currentBusPosition, cookingSurfaceRelative, t, targetLookAt);
+            targetDistance = lerp(scrollAnimationParams.scrollPages.zoomToBus.dist, scrollAnimationParams.scrollPages.zoomToFunction.dist, t);
+            currentPage = 'zoomToFunction';
+            
+        } else if (scrollProgress <= scrollAnimationParams.scrollPages.panToJunction.end) {
+            const t = normalize(scrollProgress, scrollAnimationParams.scrollPages.panToJunction.start, scrollAnimationParams.scrollPages.panToJunction.end);
+            
+            const cookingSurfaceRelative = new THREE.Vector3(
+                currentBusPosition.x + (cookingSurfaceX * busGroup.scale.x), 
+                Math.max(currentBusPosition.y + ((cookingSurfaceY + 0.5) * busGroup.scale.y), minimumTargetY),
+                currentBusPosition.z
+            );
+            
+            const junctionViewTarget = new THREE.Vector3(
+                currentBusPosition.x, 
+                Math.max(currentBusPosition.y + 50, minimumTargetY),
+                currentBusPosition.z
+            );
+            
+            vec3Lerp(cookingSurfaceRelative, junctionViewTarget, t, targetLookAt);
+            targetDistance = lerp(scrollAnimationParams.scrollPages.zoomToFunction.dist, scrollAnimationParams.scrollPages.panToJunction.dist, t);
+            currentPage = 'panToJunction';
+            showJunction = t > 0.5;
+            
+        } else if (scrollProgress < activationThreshold) {
+            const t = normalize(scrollProgress, scrollAnimationParams.scrollPages.fullJunction.start, activationThreshold);
+            
+            const startPoint = new THREE.Vector3(
+                currentBusPosition.x, 
+                Math.max(currentBusPosition.y + 50, minimumTargetY),
+                currentBusPosition.z
+            );
+            
+            const finalViewPoint = new THREE.Vector3(
+                0,
+                Math.max(80, minimumTargetY),
+                0
+            );
+            
+            vec3Lerp(startPoint, finalViewPoint, t, targetLookAt);
+            
+            targetDistance = lerp(scrollAnimationParams.scrollPages.panToJunction.dist, scrollAnimationParams.scrollPages.fullJunction.dist, t);
+            currentPage = 'fullJunction';
+            showJunction = true;
+        } else {
+            // Reached activation threshold
+            if (!isFullMouseControlActive) {
+                isFullMouseControlActive = false;
+                controls.enableZoom = true;
+                controls.enablePan = false;
+                infoElement.textContent = "Scroll complete. Use mouse to explore.";
+                scrollInfoElement.textContent = "Full mouse control active";
+                console.log("Full mouse control activated");
+                
+                // Set a safe initial position for the free camera mode
+                controls.target.copy(new THREE.Vector3(50, Math.max(50, minimumTargetY), 0));
+                // camera.position.set(100, 450, 100);
+                // controls.update();
+            }
+            currentPage = 'fullJunction';
+            showJunction = true;
+        }
+
+        // Only update camera if not in full mouse control mode
+        if (!isFullMouseControlActive) {
+            // Use a faster lerp factor to keep up with the bus movement
+            controls.target.lerp(targetLookAt, lerpFactor * 2);
+            
+            // Calculate new position based on distance
+            const currentDirection = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+            camera.position.copy(controls.target).addScaledVector(currentDirection, targetDistance);
+            
+            controls.enableZoom = false;
+            controls.enablePan = false;
+
+            if (currentPage !== scrollAnimationParams.currentAnimationPage) {
+                scrollAnimationParams.currentAnimationPage = currentPage;
+                updateInfoText(currentPage);
+            }
+            scrollInfoElement.textContent = "Scroll to animate path, drag mouse to look";
+        }
+    }
+
+    busGroup.visible = showBus;
+    staticRoadGroup.visible = showRoad;
+    junctionGroup.visible = showJunction;
+}
+
+
+        // --- Helper Functions ---
+        function normalize(value, min, max) { if (max - min === 0) return 0; return Math.max(0, Math.min(1, (value - min) / (max - min))); }
+        function lerp(a, b, t) { return a + (b - a) * t; }
+        function updateInfoText(currentPage) { switch (currentPage) { case 'straightRoad': infoElement.textContent = "Scroll: Bus on road / Drag: Look"; break; case 'zoomToBus': infoElement.textContent = "Scroll: Zooming to bus / Drag: Look"; break; case 'zoomToFunction': infoElement.textContent = "Scroll: Examining cooking area / Drag: Look"; break; case 'panToJunction': infoElement.textContent = "Scroll: Transitioning to junction / Drag: Look"; break; case 'fullJunction': infoElement.textContent = "Scroll: Viewing flyover junction / Drag: Look"; break; } }
+
+        // --- Animation Loop ---
+        const clock = new THREE.Clock();
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const time = clock.getElapsedTime();
+            const deltaTime = clock.getDelta(); // Use delta time for frame-rate independent animations
+
+            updateCameraAndControls(time);
+            if (busGroup.visible) {
+                animateFood(time);
+                animateSteam(time);
+                animateRoboticArms(time);
+                if (busState.moving) {
+                    animateBusAndRoad(time);
+                }
+             }
+
+            if (junctionGroup.visible) {
+                animateJunctionBuses(deltaTime, time); // Pass deltaTime
+                animateTrafficLights(deltaTime); // Pass deltaTime
+            }
+
+            controls.update(); // Update OrbitControls
+            renderer.render(scene, camera);
+        }
+
+        // --- Start ---
+        animate();
+        updateInfoText(scrollAnimationParams.currentAnimationPage);
+        infoElement.textContent = "Scroll down to start animation, drag mouse to look around";
+
+    </script>
+</body>
+</html>
